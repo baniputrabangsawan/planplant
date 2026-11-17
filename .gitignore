@@ -1,0 +1,12 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+worker/node_modules/
+worker/dist/
+worker/.wrangler/
+.env
+.env.*
+.dev.vars
+*.jks
+*.keystore

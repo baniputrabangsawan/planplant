@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "jagadaun-identify",
+  "account_id": "e8510dc35dc3971f4020dea653714b6d",
+  "main": "dist/worker.js",
+  "compatibility_date": "2026-11-16",
+  "workers_dev": true,
+  "build": {
+    "command": "npm run build"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jagadaun-identify-quota",
+      "database_id": "7f79fbe3-e987-4287-b916-23ab5f809f11"
+    }
+  ],
+  "observability": {
+    "enabled": false
+  }
+}
