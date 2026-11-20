@@ -34,7 +34,10 @@ import com.jagadaun.app.ui.components.ScreenTopBar
 import com.jagadaun.app.ui.components.SecondaryButton
 import com.jagadaun.app.ui.components.rememberPhotoActions
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.withContext
 
 @Composable
 fun PlantFormScreen(
@@ -43,6 +46,9 @@ fun PlantFormScreen(
     initialPhotoRef: String?,
     initialName: String?,
     initialScientificName: String?,
+    cameraPhotos: List<String>,
+    onTakePhoto: () -> Unit,
+    onCameraPhotosConsumed: () -> Unit,
     onDone: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -77,6 +83,16 @@ fun PlantFormScreen(
     }
     BackHandler(onBack = leave)
 
+    LaunchedEffect(cameraPhotos) {
+        if (cameraPhotos.isNotEmpty()) {
+            val old = photoRef
+            photoRef = cameraPhotos.single()
+            onCameraPhotosConsumed()
+            withContext(Dispatchers.IO) {
+                old?.takeIf(container.photos::isDraft)?.let(container.photos::discardDraft)
+            }
+        }
+    }
     Column(Modifier.fillMaxSize().imePadding()) {
         ScreenTopBar(title = if (plantId == null) "Tambah Tanaman" else "Ubah Tanaman", onBack = leave)
         Column(
@@ -95,7 +111,7 @@ fun PlantFormScreen(
             SecondaryButton(
                 text = "Ambil Foto",
                 icon = Icons.Filled.CameraAlt,
-                onClick = photoActions.takePhoto,
+                onClick = onTakePhoto,
                 enabled = !busy,
             )
             Spacer(Modifier.height(8.dp))

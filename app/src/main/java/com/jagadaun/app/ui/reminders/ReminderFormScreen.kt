@@ -28,10 +28,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jagadaun.app.AppContainer
+import com.jagadaun.app.domain.nextReminderDue
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.format.DateTimeParseException
 import com.jagadaun.app.ui.components.PrimaryButton
 import com.jagadaun.app.ui.components.ScreenTopBar
 
-private const val DAY_MS = 24L * 60 * 60 * 1000
 private val CARE_OPTIONS = listOf("Siram", "Pupuk", "Pangkas", "Lainnya")
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -52,6 +55,7 @@ fun ReminderFormScreen(
     var interval by remember { mutableStateOf((existing?.intervalDays ?: 7).toString()) }
     var time by remember { mutableStateOf(existing?.preferredTime ?: "07:00") }
     var intervalError by remember { mutableStateOf(false) }
+    var timeError by remember { mutableStateOf(false) }
     var dropdownOpen by remember { mutableStateOf(false) }
 
     val selectedPlantName = plants.firstOrNull { it.id == selectedPlantId }?.displayName ?: ""
@@ -118,9 +122,11 @@ fun ReminderFormScreen(
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = time,
-                onValueChange = { time = it },
+                onValueChange = { time = it; timeError = false },
                 label = { Text("Waktu (HH:mm)") },
                 singleLine = true,
+                isError = timeError,
+                supportingText = if (timeError) { { Text("Isi waktu 24 jam, misalnya 07:00") } } else null,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -130,18 +136,28 @@ fun ReminderFormScreen(
                 onClick = {
                     val pid = selectedPlantId
                     val days = interval.toIntOrNull()
+                    val validTime = time.length == 5 && time[2] == ':' && try {
+                        LocalTime.parse(time)
+                        true
+                    } catch (_: DateTimeParseException) {
+                        false
+                    }
                     if (days == null || days < 1) {
                         intervalError = true
+                    } else if (!validTime) {
+                        timeError = true
                     } else if (pid == null) {
                         // Tanpa tanaman, tidak bisa menyimpan.
                     } else {
-                        val nextDue = System.currentTimeMillis() + days * DAY_MS
+                        val zone = existing?.zoneId ?: ZoneId.systemDefault().id
+                        val nextDue = nextReminderDue(days, time, zone, System.currentTimeMillis())
                         if (existing == null) {
                             container.addReminder(
                                 plantId = pid,
                                 careType = careType,
                                 intervalDays = days,
-                                preferredTime = time.ifBlank { "07:00" },
+                                preferredTime = time,
+                                zoneId = zone,
                                 nextDue = nextDue,
                             )
                         } else {
@@ -150,7 +166,7 @@ fun ReminderFormScreen(
                                     plantId = pid,
                                     careType = careType,
                                     intervalDays = days,
-                                    preferredTime = time.ifBlank { "07:00" },
+                                    preferredTime = time,
                                     nextDue = nextDue,
                                 ),
                             )

@@ -12,40 +12,46 @@ internal fun parseHealthResponse(status: Int, body: String): HealthResult {
     try {
         JsonReader(StringReader(body)).use { reader ->
             reader.isLenient = false
-            var candidates: List<HealthCandidate>? = null
-            var uncertain: Boolean? = null
-            var attributed = false
-            reader.beginObject()
-            while (reader.hasNext()) {
-                when (reader.nextName()) {
-                    "candidates" -> {
-                        if (candidates != null) invalidHealthResponse()
-                        candidates = readHealthCandidates(reader)
-                    }
-                    "uncertain" -> {
-                        if (uncertain != null || reader.peek() != JsonToken.BOOLEAN) invalidHealthResponse()
-                        uncertain = reader.nextBoolean()
-                    }
-                    "attribution" -> {
-                        if (attributed) invalidHealthResponse()
-                        readHealthAttribution(reader)
-                        attributed = true
-                    }
-                    else -> reader.skipValue()
-                }
-            }
-            reader.endObject()
-            if (!attributed || reader.peek() != JsonToken.END_DOCUMENT) invalidHealthResponse()
-            return HealthResult(
-                candidates ?: invalidHealthResponse(),
-                uncertain ?: invalidHealthResponse(),
-            )
+            val result = readHealthResult(reader)
+            if (reader.peek() != JsonToken.END_DOCUMENT) invalidHealthResponse()
+            return result
         }
     } catch (_: IOException) {
         invalidHealthResponse()
     } catch (_: IllegalStateException) {
         invalidHealthResponse()
     }
+}
+
+internal fun readHealthResult(reader: JsonReader): HealthResult {
+    var candidates: List<HealthCandidate>? = null
+    var uncertain: Boolean? = null
+    var attributed = false
+    reader.beginObject()
+    while (reader.hasNext()) {
+        when (reader.nextName()) {
+            "candidates" -> {
+                if (candidates != null) invalidHealthResponse()
+                candidates = readHealthCandidates(reader)
+            }
+            "uncertain" -> {
+                if (uncertain != null || reader.peek() != JsonToken.BOOLEAN) invalidHealthResponse()
+                uncertain = reader.nextBoolean()
+            }
+            "attribution" -> {
+                if (attributed) invalidHealthResponse()
+                readPlantnetAttribution(reader)
+                attributed = true
+            }
+            else -> reader.skipValue()
+        }
+    }
+    reader.endObject()
+    if (!attributed) invalidHealthResponse()
+    return HealthResult(
+        candidates ?: invalidHealthResponse(),
+        uncertain ?: invalidHealthResponse(),
+    )
 }
 
 private fun readHealthCandidates(reader: JsonReader): List<HealthCandidate> {
@@ -101,7 +107,7 @@ private fun readHealthCandidate(reader: JsonReader): HealthCandidate {
     )
 }
 
-private fun readHealthAttribution(reader: JsonReader) {
+internal fun readPlantnetAttribution(reader: JsonReader) {
     var name: String? = null
     var url: String? = null
     reader.beginObject()

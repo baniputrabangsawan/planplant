@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jagadaun.app.AppContainer
 import com.jagadaun.app.ui.components.PlantPhoto
+import com.jagadaun.app.ui.components.PlantKnowledgeSection
 import com.jagadaun.app.ui.components.PrimaryButton
 import com.jagadaun.app.ui.components.ScreenTopBar
 import com.jagadaun.app.ui.components.SecondaryButton
@@ -93,6 +94,8 @@ fun PlantDetailScreen(
                 Spacer(Modifier.height(4.dp))
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
             }
+            Spacer(Modifier.height(16.dp))
+            PlantKnowledgeSection(plant.scientificName)
             if (plant.notes.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
                 SectionTitle("Catatan")

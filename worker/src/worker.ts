@@ -30,6 +30,26 @@ interface HealthCandidate {
   score: number;
 }
 
+/** Attribution is required whenever a photo is shown, so unverifiable licences are dropped. */
+interface NearbyPhoto {
+  thumbUrl: string;
+  url: string;
+  license: string;
+  credit: string;
+}
+
+/** Counts are public occurrence records, not plant abundance or native-range evidence. */
+interface NearbySpecies {
+  scientificName: string;
+  commonName: string | null;
+  description: string | null;
+  wikiUrl: string | null;
+  observations: number;
+  latitude: number;
+  longitude: number;
+  photo: NearbyPhoto | null;
+}
+
 // Cloudflare exposes a native constant-time comparison on SubtleCrypto.
 interface WorkerSubtleCrypto extends SubtleCrypto {
   timingSafeEqual(a: ArrayBuffer, b: ArrayBuffer): boolean;
@@ -47,9 +67,9 @@ class RequestError extends Error {
 }
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-const MAX_HEALTH_IMAGES = 3;
+// Pl@ntNet accepts up to five images of the same plant individual.
+const MAX_HEALTH_IMAGES = 5;
 const MAX_MULTIPART_OVERHEAD = 16 * 1024;
-const MAX_HEALTH_UPLOAD_BYTES = MAX_HEALTH_IMAGES * MAX_IMAGE_BYTES + MAX_MULTIPART_OVERHEAD;
 const UPLOAD_DEADLINE_MS = 15_000;
 const PROVIDER_DEADLINE_MS = 20_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -156,7 +176,7 @@ async function readImage(request: Request): Promise<Uint8Array<ArrayBuffer>> {
   }
 }
 
-function validateMultipartFraming(bytes: Uint8Array, boundary: string): void {
+function validateMultipartFraming(bytes: Uint8Array, boundary: string, maxImages: number): void {
   // Bound part count and header work before the platform creates FormData objects.
   const first = encoder.encode(`--${boundary}\r\n`);
   const delimiter = encoder.encode(`\r\n--${boundary}`);
@@ -195,12 +215,13 @@ function validateMultipartFraming(bytes: Uint8Array, boundary: string): void {
       }
       return;
     }
-    if (++parts > MAX_HEALTH_IMAGES) throw new RequestError("INVALID_IMAGE", 400);
+    if (++parts > maxImages) throw new RequestError("INVALID_IMAGE", 400);
     headerStart = after + 2;
   }
 }
 
-async function readHealthImages(request: Request): Promise<Blob[]> {
+async function readMultipartImages(request: Request, maxImages: number): Promise<Blob[]> {
+  const maxUploadBytes = maxImages * MAX_IMAGE_BYTES + MAX_MULTIPART_OVERHEAD;
   // A short boundary and a bounded body must be established before formData allocates.
   const contentType = request.headers.get("Content-Type") ?? "";
   const multipart = /^multipart\/form-data\s*;\s*boundary=(?:"([0-9a-z'()+_,./:=?-]{1,70})"|([0-9a-z'()+_,./:=?-]{1,70}))\s*$/i.exec(contentType);
@@ -209,7 +230,7 @@ async function readHealthImages(request: Request): Promise<Blob[]> {
   const length = request.headers.get("Content-Length");
   if (length !== null) {
     if (!/^\d+$/.test(length)) throw new RequestError("INVALID_IMAGE", 400);
-    if (Number(length) > MAX_HEALTH_UPLOAD_BYTES) {
+    if (Number(length) > maxUploadBytes) {
       cancelBody(request.body);
       throw new RequestError("IMAGE_TOO_LARGE", 413);
     }
@@ -223,17 +244,17 @@ async function readHealthImages(request: Request): Promise<Blob[]> {
       signal.addEventListener("abort", cancel, { once: true });
       try {
         // Fixed storage bounds both bytes and bookkeeping for tiny streamed chunks.
-        const bytes = new Uint8Array(MAX_HEALTH_UPLOAD_BYTES);
+        const bytes = new Uint8Array(maxUploadBytes);
         let size = 0;
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (value.byteLength > MAX_HEALTH_UPLOAD_BYTES - size) throw new RequestError("IMAGE_TOO_LARGE", 413);
+          if (value.byteLength > maxUploadBytes - size) throw new RequestError("IMAGE_TOO_LARGE", 413);
           bytes.set(value, size);
           size += value.byteLength;
         }
         complete = true;
-        validateMultipartFraming(bytes.subarray(0, size), boundary);
+        validateMultipartFraming(bytes.subarray(0, size), boundary, maxImages);
         const form = await new Response(bytes.subarray(0, size), {
           headers: { "Content-Type": contentType },
         }).formData();
@@ -241,7 +262,7 @@ async function readHealthImages(request: Request): Promise<Blob[]> {
         let imageBytes = 0;
         for (const [name, value] of form.entries()) {
           if (name !== "images" || typeof value === "string" || value.type !== "image/jpeg" ||
-              images.length >= MAX_HEALTH_IMAGES || value.size < 5) {
+              images.length >= maxImages || value.size < 5) {
             throw new RequestError("INVALID_IMAGE", 400);
           }
           if (value.size > MAX_IMAGE_BYTES) throw new RequestError("IMAGE_TOO_LARGE", 413);
@@ -390,6 +411,309 @@ async function providerResults(
   });
 }
 
+async function mappedProviderResults(images: Blob[], apiKey: string, healthCheck: boolean) {
+  let body: unknown;
+  try {
+    body = await providerResults(images, apiKey, healthCheck ? "diseases/identify" : "identify/all");
+  } catch (error) {
+    // One unusable angle must not discard the whole individual: the provider rejects a batch
+    // outright when any single image is unidentifiable. Retry at most the first two photos so a
+    // bad set cannot multiply paid provider credits.
+    if (!(error instanceof RequestError) || error.code !== "NOT_RECOGNIZED" || images.length < 2) throw error;
+    let recovered: unknown = null;
+    for (const image of images.slice(0, 2)) {
+      try {
+        recovered = await providerResults([image], apiKey, healthCheck ? "diseases/identify" : "identify/all");
+        break;
+      } catch (inner) {
+        if (!(inner instanceof RequestError) || inner.code !== "NOT_RECOGNIZED") throw inner;
+      }
+    }
+    if (recovered === null) throw error;
+    body = recovered;
+  }
+  const candidates = healthCheck ? healthCandidatesFrom(body) : candidatesFrom(body);
+  if (candidates.length === 0) throw new RequestError("NOT_RECOGNIZED", 422);
+  // Disease candidates remain hypotheses at every score; this flag only adds display caution.
+  const uncertain = healthCheck
+    ? candidates[0].score < 0.5 || (candidates.length > 1 && candidates[0].score - candidates[1].score < 0.15)
+    : candidates[0].score < 0.2;
+  return {
+    candidates,
+    uncertain,
+    attribution: { name: "Pl@ntNet", url: "https://plantnet.org/" },
+  };
+}
+
+const NEARBY_RADIUS_KM_MAX = 50;
+const NEARBY_MIN_RADIUS_KM = 1;
+
+const NEARBY_PHOTO_HOSTS = [
+  "inaturalist-open-data.s3.amazonaws.com",
+  "static.inaturalist.org",
+  "bs.plantnet.org",
+];
+const WIKI_BATCH = 3;
+
+/** Only attribution-bearing Creative Commons images are shown; anything else becomes null. */
+function nearbyPhoto(media: unknown): NearbyPhoto | null {
+  if (!Array.isArray(media)) return null;
+  for (const entry of media) {
+    if (!record(entry) || entry.type !== "StillImage") continue;
+    const identifier = nonemptyName(entry.identifier);
+    const license = nonemptyName(entry.license);
+    const credit = nonemptyName(entry.rightsHolder) ?? nonemptyName(entry.publisher);
+    if (!identifier || !license || !credit) continue;
+    if (license.length > 120 || credit.length > 120) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(identifier);
+    } catch {
+      continue;
+    }
+    if (parsed.protocol !== "https:" || !NEARBY_PHOTO_HOSTS.includes(parsed.hostname)) continue;
+    // iNaturalist serves size variants by filename stem; other hosts keep the original.
+    const sizeVariant = (size: string): URL => parsed.hostname.endsWith("amazonaws.com")
+      ? new URL(identifier.replace(/\/(original|large|medium|small)\.(jpe?g|png)$/i, `/${size}.$2`))
+      : parsed;
+    return {
+      thumbUrl: sizeVariant("small").toString(),
+      url: sizeVariant("medium").toString(),
+      // Creative Commons URLs are stored without a scheme so the app can display them verbatim.
+      license: /creativecommons\.org\/(?:licenses|publicdomain)\//i.test(license)
+        ? license.replace(/^https?:\/\//i, "").replace(/\/$/, "")
+        : license,
+      credit,
+    };
+  }
+  return null;
+}
+
+interface NearbyWiki {
+  commonName: string;
+  description: string | null;
+  wikiUrl: string;
+  /** Only set for articles whose lead names the species, so the picture matches the plant. */
+  thumbnail: string | null;
+  /** Compact Creative Commons label, or null when the file has no verifiable CC licence. */
+  license: string | null;
+  credit: string;
+}
+
+/**
+ * Indonesian name and summary from Wikipedia, accepted only when the article's lead
+ * actually contains the scientific name, which rejects unrelated name collisions.
+ */
+async function nearbyWiki(scientificName: string, signal: AbortSignal): Promise<NearbyWiki | null> {
+  const url = new URL("https://id.wikipedia.org/w/api.php");
+  url.search = new URLSearchParams({
+    action: "query", generator: "search", gsrsearch: `"${scientificName}"`, gsrlimit: "1",
+    prop: "extracts|description|pageimages|imageinfo", exintro: "1", explaintext: "1", exsentences: "2",
+    piprop: "thumbnail", pithumbsize: "640", iiprop: "extmetadata",
+    format: "json", formatversion: "2", redirects: "1",
+  }).toString();
+  try {
+    const response = await fetch(url, {
+      signal, redirect: "manual",
+      headers: { "User-Agent": "JagaDaun/0.7 (family plant app)", Accept: "application/json" },
+    });
+    if (!response.ok) {
+      cancelBody(response.body);
+      return null;
+    }
+    const body: unknown = await response.json();
+    const pages = record(body) && record(body.query) && Array.isArray(body.query.pages)
+      ? body.query.pages : [];
+    const page = pages[0];
+    if (!record(page)) return null;
+    const title = nonemptyName(page.title);
+    const extract = typeof page.extract === "string" ? page.extract : "";
+    if (!title || !extract || !extract.toLowerCase().includes(scientificName.toLowerCase())) return null;
+    const description = nonemptyName(page.description);
+    const thumbnail = record(page.thumbnail) ? nonemptyName(page.thumbnail.source) : null;
+    // The real Commons licence must travel with the picture; a generic label cannot be shown.
+    const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
+    const metadata = record(info) && record(info.extmetadata) ? info.extmetadata : null;
+    const licenseName = metadata && record(metadata.LicenseShortName) &&
+      typeof metadata.LicenseShortName.value === "string" ? metadata.LicenseShortName.value.trim() : "";
+    const artist = metadata && record(metadata.Artist) &&
+      typeof metadata.Artist.value === "string" ? metadata.Artist.value.replace(/<[^>]*>/g, "").trim() : "";
+    // Only a Creative Commons file may be shown next to the plant name.
+    const creativeCommons = /^cc[- ]?by/i.test(licenseName) || /creativecommons\.org/i.test(licenseName);
+    return {
+      commonName: title,
+      description: description ? description.slice(0, 160) : null,
+      wikiUrl: `https://id.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`,
+      thumbnail: thumbnail && thumbnail.startsWith("https://") ? thumbnail : null,
+      license: creativeCommons ? licenseName.slice(0, 120) : null,
+      credit: (artist || "Wikipedia (id)").slice(0, 120),
+    };
+  } catch {
+    // Enrichment is optional: a Wikipedia failure must never fail the location search.
+    return null;
+  }
+}
+
+/** Small batches stay under Wikipedia's anonymous rate limit. */
+async function nearbyWikiBatch(names: string[], signal: AbortSignal): Promise<Map<string, NearbyWiki | null>> {
+  const results = new Map<string, NearbyWiki | null>();
+  for (let index = 0; index < names.length; index += WIKI_BATCH) {
+    const slice = names.slice(index, index + WIKI_BATCH);
+    const settled = await Promise.all(slice.map(name => nearbyWiki(name, signal)));
+    slice.forEach((name, offset) => results.set(name, settled[offset]));
+  }
+  return results;
+}
+
+/**
+ * A species may have no licensed photo inside the searched area, so one extra bounded
+ * request looks for a human observation of the same species anywhere.
+ */
+async function nearbySpeciesPhoto(speciesKey: string, signal: AbortSignal): Promise<NearbyPhoto | null> {
+  const url = new URL("https://api.gbif.org/v1/occurrence/search");
+  url.searchParams.set("speciesKey", speciesKey);
+  url.searchParams.set("mediaType", "StillImage");
+  url.searchParams.set("basisOfRecord", "HUMAN_OBSERVATION");
+  url.searchParams.set("occurrenceStatus", "PRESENT");
+  url.searchParams.set("limit", "5");
+  try {
+    const response = await fetch(url, {
+      signal, redirect: "manual",
+      headers: { "User-Agent": "JagaDaun/0.7 (family plant app)", Accept: "application/json" },
+    });
+    if (!response.ok) {
+      cancelBody(response.body);
+      return null;
+    }
+    const body: unknown = await response.json();
+    const results = record(body) && Array.isArray(body.results) ? body.results : [];
+    for (const candidate of results) {
+      if (!record(candidate)) continue;
+      const photo = nearbyPhoto(candidate.media);
+      if (photo) return photo;
+    }
+    return null;
+  } catch {
+    // Optional enrichment: never let a photo lookup fail the location response.
+    return null;
+  }
+}
+
+/** GBIF facets rank all matching records, not a truncated page of observations. */
+async function nearbySpecies(lat: number, lon: number, radiusKm: number) {
+  return deadline(PROVIDER_DEADLINE_MS, async signal => {
+    const base = new URL("https://api.gbif.org/v1/occurrence/search");
+    base.searchParams.set("geoDistance", `${lat.toFixed(4)},${lon.toFixed(4)},${radiusKm * 1000}`);
+    base.searchParams.set("kingdomKey", "6"); // Plantae
+    base.searchParams.set("hasCoordinate", "true");
+    base.searchParams.set("hasGeospatialIssue", "false");
+    base.searchParams.set("occurrenceStatus", "PRESENT");
+    const options: RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } } = {
+      signal,
+      redirect: "manual",
+      headers: { "User-Agent": "JagaDaun/0.7 (family plant app)", Accept: "application/json" },
+      cf: { cacheTtl: 600, cacheEverything: true },
+    };
+    const read = async (url: URL): Promise<Record<string, unknown>> => {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        cancelBody(response.body);
+        if (response.status === 429) throw new RequestError("PROVIDER_QUOTA", 429);
+        throw new RequestError("PROVIDER_UNAVAILABLE", 502);
+      }
+      const body: unknown = await response.json();
+      if (!record(body)) throw new RequestError("PROVIDER_UNAVAILABLE", 502);
+      return body;
+    };
+    const ranking = new URL(base);
+    ranking.searchParams.set("limit", "0");
+    ranking.searchParams.set("facet", "speciesKey");
+    ranking.searchParams.set("facetLimit", "12");
+    const body = await read(ranking);
+    if (typeof body.count !== "number" || !Number.isSafeInteger(body.count) || body.count < 0 ||
+        !Array.isArray(body.facets)) throw new RequestError("PROVIDER_UNAVAILABLE", 502);
+    const facet = body.facets.find(value => record(value) && value.field === "SPECIES_KEY");
+    if (body.count === 0) return { species: [], totalRecords: 0 };
+    if (!record(facet) || !Array.isArray(facet.counts)) throw new RequestError("PROVIDER_UNAVAILABLE", 502);
+    const leaders = facet.counts.slice(0, 12);
+    const species = await Promise.all(leaders.map(async value => {
+      if (!record(value) || typeof value.name !== "string" || !/^\d+$/.test(value.name) ||
+          typeof value.count !== "number" || !Number.isSafeInteger(value.count) || value.count <= 0) {
+        throw new RequestError("PROVIDER_UNAVAILABLE", 502);
+      }
+      // One representative record supplies the species name, map point, and photo.
+      // A media filter can return nothing for a species that does have occurrences,
+      // so the first request keeps media and the second runs only when it came back empty.
+      const detail = new URL(base);
+      detail.searchParams.set("speciesKey", value.name);
+      detail.searchParams.set("limit", "3");
+      detail.searchParams.set("mediaType", "StillImage");
+      let occurrences = await read(detail);
+      let results = Array.isArray(occurrences.results) ? occurrences.results : [];
+      if (results.length === 0) {
+        detail.searchParams.delete("mediaType");
+        occurrences = await read(detail);
+        results = Array.isArray(occurrences.results) ? occurrences.results : [];
+      }
+      // A media filter can return nothing for a species that does have occurrences, so
+      // the media request is retried without it instead of failing the whole response.
+      let scientificName: string | null = null;
+      let latitude = Number.NaN;
+      let longitude = Number.NaN;
+      let photo: NearbyPhoto | null = null;
+      for (const candidate of results) {
+        if (!record(candidate)) continue;
+        const name = nonemptyName(candidate.species);
+        const lat = candidate.decimalLatitude;
+        const lon = candidate.decimalLongitude;
+        if (!name || typeof lat !== "number" || typeof lon !== "number" ||
+            !Number.isFinite(lat) || !Number.isFinite(lon) ||
+            Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
+        scientificName ??= name;
+        if (!Number.isFinite(latitude)) {
+          latitude = lat;
+          longitude = lon;
+        }
+        photo ??= nearbyPhoto(candidate.media);
+      }
+      if (!scientificName || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        throw new RequestError("PROVIDER_UNAVAILABLE", 502);
+      }
+      return {
+        speciesKey: value.name,
+        scientificName,
+        legacyCommonName: nonemptyName(results.find(record)?.vernacularName),
+        observations: value.count,
+        latitude,
+        longitude,
+        photo,
+      };
+    }));
+    species.sort((a, b) => b.observations - a.observations || a.scientificName.localeCompare(b.scientificName));
+    // Area media first, then one bounded per-species lookup, then a verified wiki picture.
+    const fallbackPhotos = await Promise.all(species.map(entry =>
+      entry.photo ? Promise.resolve(null) : nearbySpeciesPhoto(entry.speciesKey, signal)));
+    const wiki = await nearbyWikiBatch(species.map(entry => entry.scientificName), signal);
+    return {
+      species: species.map(({ legacyCommonName, speciesKey: _, ...entry }, index) => {
+        const page = wiki.get(entry.scientificName);
+        // The Commons licence and author must be shown, so a file without a CC licence is skipped.
+        const wikiPhoto = page?.thumbnail && page.license
+          ? { thumbUrl: page.thumbnail, url: page.thumbnail, license: page.license, credit: page.credit }
+          : null;
+        return {
+          ...entry,
+          photo: entry.photo ?? fallbackPhotos[index] ?? wikiPhoto,
+          commonName: page?.commonName ?? legacyCommonName,
+          description: page?.description ?? null,
+          wikiUrl: page?.wikiUrl ?? null,
+        } satisfies NearbySpecies;
+      }),
+      totalRecords: body.count,
+    };
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -397,17 +721,41 @@ export default {
       return configured(env) ? json({ status: "ok" }) : json({ status: "unavailable" }, 503);
     }
     const healthCheck = path === "/v1/health-check";
-    if (path !== "/v1/identify" && !healthCheck) return errorResponse("NOT_FOUND", 404);
+    const analysis = path === "/v1/analyze";
+    const nearby = path === "/v1/nearby";
+    if (path !== "/v1/identify" && !healthCheck && !analysis && !nearby) return errorResponse("NOT_FOUND", 404);
     if (request.method !== "POST") return json({ error: { code: "METHOD_NOT_ALLOWED" } }, 405, { Allow: "POST" });
     if (!configured(env)) return errorResponse("NOT_CONFIGURED", 503);
     try {
       if (!await authorized(request, env.FAMILY_TOKEN)) return errorResponse("UNAUTHORIZED", 401);
       const device = request.headers.get("X-Device-Id") ?? "";
-      if (!UUID.test(device) || (!healthCheck &&
+      if (!UUID.test(device) || (!healthCheck && !analysis && !nearby &&
           request.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "image/jpeg")) {
         return errorResponse("INVALID_IMAGE", 400);
       }
-      const images = healthCheck ? await readHealthImages(request)
+      if (nearby) {
+        // Location search is free, so it never consumes an identification quota slot.
+        const parameters = new URL(request.url).searchParams;
+        // Missing or blank coordinates must not be coerced to the valid coordinate zero.
+        const rawLat = parameters.get("lat");
+        const rawLon = parameters.get("lon");
+        const lat = rawLat?.trim() ? Number(rawLat) : Number.NaN;
+        const lon = rawLon?.trim() ? Number(rawLon) : Number.NaN;
+        const radius = Number(parameters.get("radius") ?? "10");
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) ||
+            Math.abs(lat) > 90 || Math.abs(lon) > 180 ||
+            !Number.isFinite(radius) || radius <= 0) {
+          return errorResponse("INVALID_LOCATION", 400);
+        }
+        const radiusKm = Math.round(Math.min(Math.max(radius, NEARBY_MIN_RADIUS_KM), NEARBY_RADIUS_KM_MAX));
+        const result = await nearbySpecies(lat, lon, radiusKm);
+        return json({
+          ...result,
+          radiusKm,
+          attribution: { name: "GBIF", url: "https://www.gbif.org/" },
+        });
+      }
+      const images = healthCheck || analysis ? await readMultipartImages(request, MAX_HEALTH_IMAGES)
         : [new Blob([await readImage(request)], { type: "image/jpeg" })];
       try {
         if (!await reserveQuota(env.DB, device.toLowerCase())) return errorResponse("DAILY_LIMIT", 429);
@@ -415,18 +763,28 @@ export default {
         if (error instanceof RequestError) throw error;
         throw new RequestError("PROVIDER_UNAVAILABLE", 503);
       }
-      const body = await providerResults(images, env.PLANTNET_API_KEY, healthCheck ? "diseases/identify" : "identify/all");
-      const candidates = healthCheck ? healthCandidatesFrom(body) : candidatesFrom(body);
-      if (candidates.length === 0) return errorResponse("NOT_RECOGNIZED", 422);
-      // Disease candidates remain hypotheses at every score; this flag only adds display caution.
-      const uncertain = healthCheck
-        ? candidates[0].score < 0.5 || (candidates.length > 1 && candidates[0].score - candidates[1].score < 0.15)
-        : candidates[0].score < 0.2;
-      return json({
-        candidates,
-        uncertain,
-        attribution: { name: "Pl@ntNet", url: "https://plantnet.org/" },
-      });
+      if (analysis) {
+        // Settle independently so one provider's failure cannot discard the other's hypotheses.
+        const [identification, health] = await Promise.allSettled([
+          mappedProviderResults(images, env.PLANTNET_API_KEY, false),
+          mappedProviderResults(images, env.PLANTNET_API_KEY, true),
+        ]);
+        if (identification.status === "rejected" && health.status === "rejected") {
+          // Deterministic precedence retains the existing safe identification HTTP error contract.
+          throw identification.reason;
+        }
+        return json({
+          identification: identification.status === "fulfilled" ? identification.value : null,
+          identificationErrorCode: identification.status === "rejected"
+            ? identification.reason instanceof RequestError ? identification.reason.code : "PROVIDER_UNAVAILABLE"
+            : null,
+          health: health.status === "fulfilled" ? health.value : null,
+          healthErrorCode: health.status === "rejected"
+            ? health.reason instanceof RequestError ? health.reason.code : "PROVIDER_UNAVAILABLE"
+            : null,
+        });
+      }
+      return json(await mappedProviderResults(images, env.PLANTNET_API_KEY, healthCheck));
     } catch (error) {
       // Deliberately omit exceptions, upstream bodies, URLs, and image/name data from logs.
       if (error instanceof RequestError) return errorResponse(error.code, error.status);

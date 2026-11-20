@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { afterEach, test } from "node:test";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { setImmediate as settleMicrotasks } from "node:timers/promises";
 import worker, { type D1Database, type D1PreparedStatement, type Env } from "../src/worker.ts";
 
 // Cloudflare's native constant-time extension is not exposed by Node's SubtleCrypto.
@@ -84,6 +85,15 @@ function healthRequest(body: BodyInit = healthForm(), overrides: Record<string, 
     method: "POST",
     headers: { authorization: "Bearer test-family-token", "x-device-id": DEVICE, ...overrides },
     body: multipart,
+    duplex: "half",
+  } as RequestInit);
+}
+
+function analysisRequest(body: BodyInit = healthForm(), overrides: Record<string, string> = {}) {
+  return new Request("https://identify.example/v1/analyze", {
+    method: "POST",
+    headers: { authorization: "Bearer test-family-token", "x-device-id": DEVICE, ...overrides },
+    body,
     duplex: "half",
   } as RequestInit);
 }
@@ -470,7 +480,7 @@ test("health check rejects authorization and invalid multipart uploads before qu
     healthRequest(JPEG.slice(0, 4)),
     healthRequest(JPEG, { "content-length": "invalid" }),
     healthRequest(healthForm([])),
-    healthRequest(healthForm([JPEG, JPEG, JPEG, JPEG])),
+    healthRequest(healthForm([JPEG, JPEG, JPEG, JPEG, JPEG, JPEG])),
     healthRequest(unknownField),
     healthRequest(textImage),
     healthRequest(unknownFile),
@@ -496,7 +506,7 @@ test("health check rejects authorization and invalid multipart uploads before qu
 test("health upload bounds announced and streamed multipart bytes before parsing or quota", async () => {
   const calls = upstream({});
   const db = new FakeDatabase();
-  const maximum = 12 * 1024 * 1024 + 16 * 1024;
+  const maximum = 5 * 4 * 1024 * 1024 + 16 * 1024;
   await expectError(await worker.fetch(healthRequest(healthForm(), {
     "content-length": String(maximum + 1),
   }), environment(db)), 413, "IMAGE_TOO_LARGE");
@@ -658,4 +668,591 @@ test("health provider deadline also bounds a stalled response body", async (t) =
   await started.promise;
   t.mock.timers.tick(20_000);
   await expectError(await pending, 504, "TIMEOUT");
+});
+
+test("analysis starts both providers in parallel from one JPEG and reserves quota once", async () => {
+  const started = new Set<string>();
+  const bothStarted = Promise.withResolvers<void>();
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    started.add(url.pathname);
+    if (started.size === 2) bothStarted.resolve();
+    await bothStarted.promise;
+    assert.equal(url.origin, "https://my-api.plantnet.org");
+    assert.equal(url.searchParams.get("lang"), "id");
+    assert.equal(url.searchParams.get("nb-results"), "3");
+    assert.equal(url.searchParams.get("include-related-images"), "false");
+    assert.equal(url.searchParams.get("api-key"), "test-provider-key");
+    assert.equal(init?.method, "POST");
+    assert.equal(init?.redirect, "manual");
+    assert.ok(init?.signal);
+    const form = init?.body as FormData;
+    assert.deepEqual([...form.keys()].sort(), ["images", "organs"]);
+    assert.equal(form.get("organs"), "auto");
+    const image = form.get("images") as File;
+    assert.equal(image.type, "image/jpeg");
+    assert.deepEqual(new Uint8Array(await image.arrayBuffer()), JPEG);
+    return Response.json({ results: url.pathname.includes("/diseases/")
+      ? [{ name: "ALTEAL", description: "Bercak daun", score: 0.65 },
+        { name: "PHYTOP", description: "Hipotesis lain", score: 0.6 }]
+      : [species("Epipremnum aureum", 0.19, ["Sirih gading"])] });
+  };
+  const db = new FakeDatabase();
+  const response = await worker.fetch(analysisRequest(), environment(db));
+  assert.equal(response.status, 200);
+  const attribution = { name: "Pl@ntNet", url: "https://plantnet.org/" };
+  assert.deepEqual(await response.json(), {
+    identification: {
+      candidates: [{ scientificName: "Epipremnum aureum", commonName: "Sirih gading", score: 0.19 }],
+      uncertain: true, attribution,
+    },
+    identificationErrorCode: null,
+    health: {
+      candidates: [
+        { code: "ALTEAL", label: "Bercak daun", score: 0.65 },
+        { code: "PHYTOP", label: "Hipotesis lain", score: 0.6 },
+      ],
+      uncertain: true, attribution,
+    },
+    healthErrorCode: null,
+  });
+  assert.deepEqual([...started].sort(), ["/v2/diseases/identify", "/v2/identify/all"]);
+  assert.equal(db.batches, 1);
+  assert.equal(db.rows.length, 1);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
+test("analysis sends every rotation view to both providers for one family quota", async () => {
+  const images = [JPEG, new Uint8Array([...JPEG.slice(0, -2), 1, 0xff, 0xd9]),
+    new Uint8Array([...JPEG.slice(0, -2), 2, 0xff, 0xd9])];
+  const seen = new Map<string, number[][]>();
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    const form = init?.body as FormData;
+    const uploaded = await Promise.all(form.getAll("images").map(async value =>
+      [...new Uint8Array(await (value as File).arrayBuffer())]));
+    seen.set(path, uploaded);
+    assert.deepEqual(form.getAll("organs"), ["auto", "auto", "auto"]);
+    return Response.json({ results: path.includes("/diseases/")
+      ? [{ name: "APHISP", description: "Aphis sp.", score: 0.8 }]
+      : [species("Hibiscus rosa-sinensis", 0.9)] });
+  };
+  const db = new FakeDatabase();
+  const response = await worker.fetch(analysisRequest(healthForm(images)), environment(db));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.identification.candidates[0].scientificName, "Hibiscus rosa-sinensis");
+  assert.equal(body.health.candidates[0].code, "APHISP");
+  assert.deepEqual([...seen.keys()].sort(), ["/v2/diseases/identify", "/v2/identify/all"]);
+  for (const uploaded of seen.values()) assert.deepEqual(uploaded, images.map(image => [...image]));
+  assert.equal(db.rows.length, 1);
+});
+test("one unrecognizable angle falls back to single photos instead of failing the whole plant", async () => {
+  const images = [JPEG, new Uint8Array([...JPEG.slice(0, -2), 7, 0xff, 0xd9])];
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls++;
+    const form = init?.body as FormData;
+    const uploaded = form.getAll("images").length;
+    const diseased = new URL(String(input)).pathname.includes("/diseases/");
+    // Batches containing the second angle are rejected; a lone first angle succeeds.
+    if (uploaded > 1) return Response.json({}, { status: 422 });
+    return Response.json({ results: diseased
+      ? [{ name: "APHISP", description: "Aphis sp.", score: 0.8 }]
+      : [species("Hibiscus rosa-sinensis", 0.9)] });
+  };
+  const db = new FakeDatabase();
+  const response = await worker.fetch(analysisRequest(healthForm(images)), environment(db));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.identification.candidates[0].scientificName, "Hibiscus rosa-sinensis");
+  assert.equal(body.health.candidates[0].code, "APHISP");
+  // Two rejected batch calls, then one single-image call per provider.
+  assert.equal(calls, 4);
+  assert.equal(db.rows.length, 1);
+});
+
+test("fallback still reports not-recognized when every single angle is rejected", async () => {
+  const db = new FakeDatabase();
+  const calls = upstream({}, 422);
+  await expectError(await worker.fetch(analysisRequest(healthForm([JPEG, JPEG])), environment(db)), 422, "NOT_RECOGNIZED");
+  assert.equal(db.rows.length, 1);
+  assert.equal(calls(), 6);
+});
+
+test("analysis preserves either successful section for every independent provider failure", async () => {
+  for (const failedSection of ["identification", "health"] as const) {
+    for (const [failure, code] of [
+      [() => Response.json({}, { status: 401 }), "PROVIDER_AUTH"],
+      [() => Response.json({}, { status: 429 }), "PROVIDER_QUOTA"],
+      [() => Response.json({}, { status: 422 }), "NOT_RECOGNIZED"],
+      [() => Response.json({ results: [] }), "NOT_RECOGNIZED"],
+      [() => Response.json({ results: [null, { score: 1.1 }] }), "NOT_RECOGNIZED"],
+      [() => Response.json({ results: {} }), "PROVIDER_UNAVAILABLE"],
+      [() => new Response("private malformed provider response"), "PROVIDER_UNAVAILABLE"],
+      [() => { throw new Error("private provider URL and credential"); }, "PROVIDER_UNAVAILABLE"],
+    ] as const) {
+      let calls = 0;
+      globalThis.fetch = async input => {
+        calls++;
+        const section = new URL(String(input)).pathname.includes("/diseases/") ? "health" : "identification";
+        if (section === failedSection) return failure();
+        return Response.json({ results: section === "health"
+          ? [{ name: "ALTEAL", description: "Bercak daun", score: 0.8 }]
+          : [species("Epipremnum aureum", 0.8)] });
+      };
+      const db = new FakeDatabase();
+      const response = await worker.fetch(analysisRequest(), environment(db));
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      const successfulSection = failedSection === "health" ? "identification" : "health";
+      assert.equal(body[failedSection], null);
+      assert.equal(body[`${failedSection}ErrorCode`], code);
+      assert.equal(body[`${successfulSection}ErrorCode`], null);
+      assert.equal(body[successfulSection].candidates.length, 1);
+      assert.deepEqual(body[successfulSection].attribution, { name: "Pl@ntNet", url: "https://plantnet.org/" });
+      assert.equal(calls, 2);
+      assert.equal(db.rows.length, 1);
+    }
+  }
+});
+
+test("analysis with both sections failed uses the safe identification HTTP error without retry", async () => {
+  for (const [status, expectedStatus, code] of [
+    [401, 503, "PROVIDER_AUTH"], [429, 429, "PROVIDER_QUOTA"],
+    [422, 422, "NOT_RECOGNIZED"], [500, 502, "PROVIDER_UNAVAILABLE"],
+  ] as const) {
+    const calls = upstream({ private: "must not leak" }, status);
+    const db = new FakeDatabase();
+    await expectError(await worker.fetch(analysisRequest(), environment(db)), expectedStatus, code);
+    assert.equal(calls(), 2);
+    assert.equal(db.rows.length, 1);
+  }
+  globalThis.fetch = async input => Response.json({}, {
+    status: new URL(String(input)).pathname.includes("/diseases/") ? 429 : 401,
+  });
+  await expectError(await worker.fetch(analysisRequest(), environment()), 503, "PROVIDER_AUTH");
+  upstream({ results: [] });
+  await expectError(await worker.fetch(analysisRequest(), environment()), 422, "NOT_RECOGNIZED");
+});
+
+test("analysis rejects auth, invalid images and excess photos before quota or provider calls", async () => {
+  const calls = upstream({});
+  const db = new FakeDatabase();
+  let reads = 0;
+  await expectError(await worker.fetch(analysisRequest(new ReadableStream({
+    pull() { reads++; },
+  }, { highWaterMark: 0 }), {
+    authorization: "Bearer wrong",
+    "content-type": "multipart/form-data; boundary=analysis",
+  }), environment(db)), 401, "UNAUTHORIZED");
+  assert.equal(reads, 0);
+  const png = new FormData();
+  png.append("images", new Blob([JPEG], { type: "image/png" }), "plant.png");
+  const extraField = healthForm();
+  extraField.append("organs", "auto");
+  for (const invalid of [
+    analysisRequest(healthForm(), { "x-device-id": "invalid" }),
+    request(JPEG, {}, "/v1/analyze"),
+    analysisRequest(healthForm([])),
+    analysisRequest(healthForm([JPEG, JPEG, JPEG, JPEG, JPEG, JPEG])),
+    analysisRequest(healthForm([JPEG.slice(0, 4)])),
+    analysisRequest(png),
+    analysisRequest(extraField),
+    analysisRequest("not multipart", { "content-type": "multipart/form-data; boundary=analysis" }),
+    analysisRequest(healthForm(), { "content-length": "invalid" }),
+  ]) {
+    await expectError(await worker.fetch(invalid, environment(db)), 400, "INVALID_IMAGE");
+  }
+  await expectError(await worker.fetch(analysisRequest(healthForm(), {
+    "content-length": String(5 * 4 * 1024 * 1024 + 16 * 1024 + 1),
+  }), environment(db)), 413, "IMAGE_TOO_LARGE");
+  assert.equal(db.batches, 0);
+  assert.equal(calls(), 0);
+});
+
+test("analysis shares quota with standalone calls and counts both-provider failure once", async () => {
+  const calls = upstream({}, 500);
+  const db = new FakeDatabase();
+  const env = environment(db);
+  for (let attempt = 0; attempt < 19; attempt++) {
+    await expectError(await worker.fetch(attempt % 2 ? healthRequest() : request(), env), 502, "PROVIDER_UNAVAILABLE");
+  }
+  await expectError(await worker.fetch(analysisRequest(), env), 502, "PROVIDER_UNAVAILABLE");
+  await expectError(await worker.fetch(analysisRequest(), env), 429, "DAILY_LIMIT");
+  assert.equal(db.rows.length, 20);
+  assert.equal(calls(), 21);
+});
+
+test("analysis preserves a success when the other provider response body times out", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const started = Promise.withResolvers<void>();
+  globalThis.fetch = async (input, init) => {
+    if (!new URL(String(input)).pathname.includes("/diseases/")) {
+      return Response.json({ results: [species("Epipremnum aureum", 0.8)] });
+    }
+    started.resolve();
+    return new Response(new ReadableStream({
+      start(controller) { init?.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError"))); },
+    }));
+  };
+  const pending = worker.fetch(analysisRequest(), environment());
+  await started.promise;
+  // Drain the successful response's body/microtasks before advancing both deadline timers.
+  await settleMicrotasks();
+  t.mock.timers.tick(20_000);
+  const response = await pending;
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.identification.candidates[0].scientificName, "Epipremnum aureum");
+  assert.equal(body.identificationErrorCode, null);
+  assert.equal(body.health, null);
+  assert.equal(body.healthErrorCode, "TIMEOUT");
+});
+
+test("analysis fails closed before providers on missing configuration, database failure, or wrong method", async () => {
+  const calls = upstream({});
+  const db = new FakeDatabase();
+  await expectError(await worker.fetch(analysisRequest(), { FAMILY_TOKEN: "test-family-token", DB: db }), 503, "NOT_CONFIGURED");
+  assert.equal(db.batches, 0);
+  const response = await worker.fetch(new Request("https://identify.example/v1/analyze"), environment(db));
+  await expectError(response, 405, "METHOD_NOT_ALLOWED");
+  assert.equal(response.headers.get("allow"), "POST");
+  assert.equal(db.batches, 0);
+  db.fail = true;
+  await expectError(await worker.fetch(analysisRequest(), environment(db)), 503, "PROVIDER_UNAVAILABLE");
+  assert.equal(db.rows.length, 0);
+  assert.equal(calls(), 0);
+});
+
+test("analysis returns the safe HTTP timeout when both providers exceed the deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const bothStarted = Promise.withResolvers<void>();
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    if (++calls === 2) bothStarted.resolve();
+    return new Response(new ReadableStream({
+      start(controller) { init?.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError"))); },
+    }));
+  };
+  const db = new FakeDatabase();
+  const pending = worker.fetch(analysisRequest(), environment(db));
+  await bothStarted.promise;
+  t.mock.timers.tick(20_000);
+  await expectError(await pending, 504, "TIMEOUT");
+  assert.equal(calls, 2);
+  assert.equal(db.rows.length, 1);
+});
+
+function nearbyRequest(url = "https://identify.example/v1/nearby?lat=-6.2&lon=106.816&radius=10") {
+  return new Request(url, {
+    method: "POST",
+    headers: { authorization: "Bearer test-family-token", "x-device-id": DEVICE },
+  });
+}
+
+function nearbyRanking(counts: { name: string; count: number }[] = [], count = 0) {
+  return { count, results: [], facets: [{ field: "SPECIES_KEY", counts }] };
+}
+
+function wikiPage(title: string, scientificName: string, description: string | null = null) {
+  return {
+    query: { pages: [{ title, description, extract: `${scientificName} adalah tumbuhan tropis.` }] },
+  };
+}
+
+const PHOTO = {
+  type: "StillImage",
+  identifier: "https://inaturalist-open-data.s3.amazonaws.com/photos/736703933/original.jpg",
+  license: "http://creativecommons.org/licenses/by-nc/4.0/",
+  rightsHolder: "reivawisdharilla",
+  publisher: "iNaturalist",
+};
+
+test("nearby ranks all matching GBIF records without consuming identification quota", async () => {
+  let calls = 0;
+  globalThis.fetch = async input => {
+    calls++;
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://api.gbif.org");
+    assert.equal(url.pathname, "/v1/occurrence/search");
+    assert.equal(url.searchParams.get("kingdomKey"), "6");
+    assert.equal(url.searchParams.get("hasGeospatialIssue"), "false");
+    assert.equal(url.searchParams.get("occurrenceStatus"), "PRESENT");
+    assert.equal(url.searchParams.get("geoDistance"), "-6.2000,106.8160,10000");
+    if (url.searchParams.get("facet") === "speciesKey") {
+      assert.equal(url.searchParams.get("limit"), "0");
+      assert.equal(url.searchParams.get("facetLimit"), "12");
+      return Response.json(nearbyRanking([{ name: "1", count: 71 }, { name: "2", count: 42 }], 2859));
+    }
+    assert.equal(url.searchParams.get("limit"), "3");
+    assert.equal(url.searchParams.get("mediaType"), "StillImage");
+    const coconut = url.searchParams.get("speciesKey") === "1";
+    return Response.json({ results: [{
+      species: coconut ? "Cocos nucifera" : "Musa paradisiaca",
+      vernacularName: coconut ? "Kelapa" : null,
+      decimalLatitude: -6.21, decimalLongitude: 106.82,
+      media: coconut ? [PHOTO] : [],
+    }] });
+  };
+  const db = new FakeDatabase();
+  const response = await worker.fetch(nearbyRequest(), environment(db));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.species.map((s: { scientificName: string; observations: number }) =>
+    [s.scientificName, s.observations]), [["Cocos nucifera", 71], ["Musa paradisiaca", 42]]);
+  assert.equal(body.species[0].commonName, "Kelapa");
+  assert.equal(body.species[0].latitude, -6.21);
+  assert.equal(body.radiusKm, 10);
+  assert.equal(body.totalRecords, 2859);
+  assert.deepEqual(body.attribution, { name: "GBIF", url: "https://www.gbif.org/" });
+  assert.deepEqual(body.species[0].photo, {
+    thumbUrl: "https://inaturalist-open-data.s3.amazonaws.com/photos/736703933/small.jpg",
+    url: "https://inaturalist-open-data.s3.amazonaws.com/photos/736703933/medium.jpg",
+    license: "creativecommons.org/licenses/by-nc/4.0",
+    credit: "reivawisdharilla",
+  });
+  assert.equal(body.species[1].photo, null);
+  assert.equal(db.rows.length, 0);
+  assert.equal(db.batches, 0);
+});
+
+test("nearby only shows photos with verifiable attribution from allowed hosts", async () => {
+  const cases = [
+    { ...PHOTO, type: "MovingImage" },
+    { ...PHOTO, license: null },
+    { ...PHOTO, rightsHolder: null, publisher: null },
+    { ...PHOTO, identifier: "http://inaturalist-open-data.s3.amazonaws.com/photos/1/original.jpg" },
+    { ...PHOTO, identifier: "https://evil.example/photos/1/original.jpg" },
+    { ...PHOTO, identifier: "https://inaturalist-open-data.s3.amazonaws.com.evil.example/1/original.jpg" },
+  ];
+  for (const media of cases) {
+    globalThis.fetch = async input => {
+      const url = new URL(String(input));
+      return Response.json(url.searchParams.has("facet")
+        ? nearbyRanking([{ name: "1", count: 2 }], 2)
+        : { results: [{ species: "Cocos nucifera", decimalLatitude: -6.2, decimalLongitude: 106.8, media: [media] }] });
+    };
+    const body = await (await worker.fetch(nearbyRequest(), environment())).json();
+    assert.equal(body.species[0].photo, null, JSON.stringify(media));
+  }
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.searchParams.has("facet")) return Response.json(nearbyRanking([{ name: "1", count: 2 }], 2));
+    return Response.json({ results: [{
+      species: "Cocos nucifera", decimalLatitude: -6.2, decimalLongitude: 106.8,
+      media: [{ ...PHOTO, identifier: "https://bs.plantnet.org/image/o/abc", license: "CC BY-SA", rightsHolder: "pratiwir" }],
+    }] });
+  };
+  const body = await (await worker.fetch(nearbyRequest(), environment())).json();
+  assert.equal(body.species[0].photo.url, "https://bs.plantnet.org/image/o/abc");
+  assert.equal(body.species[0].photo.license, "CC BY-SA");
+});
+
+test("nearby adds Indonesian names only when Wikipedia confirms the scientific name", async () => {
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.hostname === "id.wikipedia.org") {
+      const query = url.searchParams.get("gsrsearch") ?? "";
+      if (query.includes("Musa paradisiaca")) return Response.json(wikiPage("Pisang nangka", "Musa paradisiaca"));
+      // A hit whose lead does not mention the species must be rejected.
+      return Response.json(wikiPage("Daun", "Tumbuhan ini memiliki daun hijau."));
+    }
+    if (url.searchParams.has("facet")) {
+      return Response.json(nearbyRanking([{ name: "1", count: 9 }, { name: "2", count: 4 }], 20));
+    }
+    const first = url.searchParams.get("speciesKey") === "1";
+    return Response.json({ results: [{
+      species: first ? "Nephelium lappaceum" : "Musa paradisiaca",
+      decimalLatitude: -6.21, decimalLongitude: 106.82,
+    }] });
+  };
+  const body = await (await worker.fetch(nearbyRequest(), environment())).json();
+  assert.equal(body.species[0].commonName, null);
+  assert.equal(body.species[0].wikiUrl, null);
+  assert.equal(body.species[0].description, null);
+  assert.equal(body.species[1].commonName, "Pisang nangka");
+  assert.equal(body.species[1].wikiUrl, "https://id.wikipedia.org/wiki/Pisang_nangka");
+});
+
+test("nearby still succeeds when Wikipedia enrichment fails or is rate limited", async () => {
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.hostname === "id.wikipedia.org") return new Response("too many", { status: 429 });
+    if (url.searchParams.has("facet")) return Response.json(nearbyRanking([{ name: "1", count: 5 }], 5));
+    return Response.json({ results: [{
+      species: "Codiaeum variegatum", vernacularName: "Croton",
+      decimalLatitude: -6.21, decimalLongitude: 106.82,
+    }] });
+  };
+  const response = await worker.fetch(nearbyRequest(), environment());
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.species[0].commonName, "Croton");
+  assert.equal(body.species[0].photo, null);
+});
+
+test("nearby falls back to a verified Wikipedia picture only with its real CC licence", async () => {
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.hostname === "id.wikipedia.org") {
+      const name = (url.searchParams.get("gsrsearch") ?? "").replaceAll('"', "");
+      const licensed = name === "Mimosa pudica";
+      return Response.json({
+        query: { pages: [{
+          title: licensed ? "Putri malu" : "Puring",
+          description: null,
+          extract: `${name} adalah tumbuhan.`,
+          thumbnail: { source: `https://upload.wikimedia.org/${name.replaceAll(" ", "_")}.jpg` },
+          // The non-CC article must keep its photo hidden.
+          imageinfo: licensed
+            ? [{ extmetadata: {
+              LicenseShortName: { value: "CC BY-SA 4.0" },
+              Artist: { value: '<a href="https://commons.example">Budi</a>' },
+            } }]
+            : [{ extmetadata: { LicenseShortName: { value: "All rights reserved" } } }],
+        }] },
+      });
+    }
+    if (url.searchParams.has("facet")) {
+      return Response.json(nearbyRanking([{ name: "1", count: 9 }, { name: "2", count: 4 }], 13));
+    }
+    if (url.searchParams.get("basisOfRecord") === "HUMAN_OBSERVATION") {
+      return Response.json({ results: [] });
+    }
+    const first = url.searchParams.get("speciesKey") === "1";
+    return Response.json({ results: [{
+      species: first ? "Mimosa pudica" : "Codiaeum variegatum",
+      decimalLatitude: -6.21, decimalLongitude: 106.82,
+      media: first ? [] : [PHOTO],
+    }] });
+  };
+  const body = await (await worker.fetch(nearbyRequest(), environment())).json();
+  assert.deepEqual(body.species[0].photo, {
+    thumbUrl: "https://upload.wikimedia.org/Mimosa_pudica.jpg",
+    url: "https://upload.wikimedia.org/Mimosa_pudica.jpg",
+    license: "CC BY-SA 4.0",
+    credit: "Budi",
+  });
+  // A GBIF area photo wins over the Wikipedia fallback, even when the article is CC licensed.
+  assert.equal(body.species[1].photo.credit, "reivawisdharilla");
+});
+
+test("nearby keeps occurrences when the media filter excludes every record", async () => {
+  let unfilteredCalls = 0;
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.hostname === "id.wikipedia.org") return new Response("nope", { status: 503 });
+    if (url.searchParams.has("facet")) {
+      return Response.json(nearbyRanking([{ name: "3035652", count: 4 }], 4));
+    }
+    if (url.searchParams.get("mediaType") === "StillImage") {
+      assert.equal(url.searchParams.get("limit"), "3");
+      return Response.json({ count: 0, results: [] });
+    }
+    unfilteredCalls++;
+    return Response.json({ count: 4, results: [{
+      species: "Polyscias fruticosa", decimalLatitude: -6.21, decimalLongitude: 106.82,
+    }] });
+  };
+  const response = await worker.fetch(nearbyRequest(), environment());
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(unfilteredCalls, 1);
+  assert.equal(body.species[0].scientificName, "Polyscias fruticosa");
+  assert.equal(body.species[0].observations, 4);
+  assert.equal(body.species[0].photo, null);
+});
+
+test("nearby looks outside the area for a licensed species photo", async () => {
+  const globalCalls: string[] = [];
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.hostname === "id.wikipedia.org") return new Response("nope", { status: 503 });
+    if (url.searchParams.has("facet")) return Response.json(nearbyRanking([{ name: "3035652", count: 6 }], 6));
+    if (url.searchParams.get("basisOfRecord") === "HUMAN_OBSERVATION") {
+      globalCalls.push(url.searchParams.get("speciesKey") ?? "");
+      assert.equal(url.searchParams.get("mediaType"), "StillImage");
+      return Response.json({ results: [{ media: [PHOTO] }] });
+    }
+    return Response.json({ results: [{
+      species: "Polyscias fruticosa", decimalLatitude: -6.21, decimalLongitude: 106.82,
+    }] });
+  };
+  const body = await (await worker.fetch(nearbyRequest(), environment())).json();
+  assert.deepEqual(globalCalls, ["3035652"]);
+  assert.equal(body.species[0].photo.credit, "reivawisdharilla");
+  assert.equal(body.species[0].photo.thumbUrl.endsWith("/small.jpg"), true);
+});
+
+test("nearby skips the global photo lookup when the area already supplied one", async () => {
+  let globalCalls = 0;
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.hostname === "id.wikipedia.org") return new Response("nope", { status: 503 });
+    if (url.searchParams.has("facet")) return Response.json(nearbyRanking([{ name: "1", count: 6 }], 6));
+    if (url.searchParams.get("basisOfRecord") === "HUMAN_OBSERVATION") {
+      globalCalls++;
+      return Response.json({ results: [] });
+    }
+    return Response.json({ results: [{
+      species: "Mimosa pudica", decimalLatitude: -6.21, decimalLongitude: 106.82, media: [PHOTO],
+    }] });
+  };
+  const body = await (await worker.fetch(nearbyRequest(), environment())).json();
+  assert.equal(globalCalls, 0);
+  assert.equal(body.species[0].photo.credit, "reivawisdharilla");
+});
+
+test("nearby clamps radius and rejects missing, blank and unusable coordinates before provider calls", async () => {
+  const calls = upstream(nearbyRanking());
+  const db = new FakeDatabase();
+  for (const query of [
+    "lat=abc&lon=106", "lat=-6&lon=200", "lat=-6&lon=106&radius=0", "lon=106",
+    "lat=-6", "lat=&lon=106", "lat=%20&lon=106", "lat=-6&lon=", "lat=Infinity&lon=0",
+  ]) {
+    await expectError(await worker.fetch(nearbyRequest(`https://identify.example/v1/nearby?${query}`), environment(db)), 400, "INVALID_LOCATION");
+  }
+  assert.equal(calls(), 0);
+  globalThis.fetch = async input => {
+    assert.equal(new URL(String(input)).searchParams.get("geoDistance"), "0.0000,0.0000,50000");
+    return Response.json(nearbyRanking());
+  };
+  const body = await (await worker.fetch(nearbyRequest(
+    "https://identify.example/v1/nearby?lat=0&lon=0&radius=900"), environment(db))).json();
+  assert.equal(body.radiusKm, 50);
+  assert.deepEqual(body.species, []);
+  assert.equal(body.totalRecords, 0);
+  assert.equal(db.rows.length, 0);
+});
+
+test("nearby requires authorization before requesting location records", async () => {
+  const calls = upstream(nearbyRanking());
+  const request = nearbyRequest();
+  request.headers.set("Authorization", "Bearer wrong-token");
+  await expectError(await worker.fetch(request, environment()), 401, "UNAUTHORIZED");
+  assert.equal(calls(), 0);
+});
+
+test("nearby exposes safe upstream errors, never fabricating an empty map", async () => {
+  for (const [status, code, expectedStatus] of [
+    [429, "PROVIDER_QUOTA", 429], [503, "PROVIDER_UNAVAILABLE", 502],
+  ] as const) {
+    upstream({ secret: "must not escape" }, status);
+    await expectError(await worker.fetch(nearbyRequest(), environment()), expectedStatus, code);
+  }
+  for (const malformed of [{ results: [] }, nearbyRanking([{ name: "bad", count: 5 }], 5)]) {
+    upstream(malformed);
+    await expectError(await worker.fetch(nearbyRequest(), environment()), 502, "PROVIDER_UNAVAILABLE");
+  }
+});
+
+test("nearby rejects missing map coordinates rather than coercing null to zero", async () => {
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    return Response.json(url.searchParams.has("facet")
+      ? nearbyRanking([{ name: "1", count: 3 }], 3)
+      : { results: [{ species: "Cocos nucifera", decimalLatitude: null, decimalLongitude: 106.8 }] });
+  };
+  await expectError(await worker.fetch(nearbyRequest(), environment()), 502, "PROVIDER_UNAVAILABLE");
 });

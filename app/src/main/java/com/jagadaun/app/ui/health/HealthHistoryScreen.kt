@@ -73,7 +73,7 @@ fun HealthHistoryScreen(container: AppContainer, plantId: String?, onBack: () ->
             ) {
                 item {
                     Text(
-                        "Tersimpan hanya di HP. Status perkembangan adalah pengamatan Anda, bukan hasil diagnosis ulang.",
+                        "Foto, hasil, dan perkembangan tersimpan di HP.",
                         style = MaterialTheme.typography.bodyLarge,
                         modifier = Modifier.padding(vertical = 16.dp),
                     )
@@ -88,11 +88,11 @@ fun HealthHistoryScreen(container: AppContainer, plantId: String?, onBack: () ->
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             val name = plants.firstOrNull { it.id == record.plantId }?.displayName
                             name?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
-                            Text(HealthGuides.forCode(record.candidate.code)?.title ?: "Dugaan dari layanan", style = MaterialTheme.typography.titleMedium)
+                            Text(HealthGuides.forCode(record.candidate.code)?.title?.removePrefix("Dugaan ")?.replaceFirstChar { it.uppercase() } ?: record.candidate.label, style = MaterialTheme.typography.titleMedium)
                             Text(record.candidate.label, color = TextSecondary)
                             Text(healthRecordDate(record.createdAt), color = TextSecondary)
                             Text(record.status.label)
-                            if (record.uncertain) Text("Belum bisa dipastikan", color = MaterialTheme.colorScheme.error)
+                            if (record.uncertain) Text("Perlu foto tambahan", color = MaterialTheme.colorScheme.error)
                             Text("Buka hasil dan pantau →", color = MaterialTheme.colorScheme.primary)
                         }
                     }
@@ -125,11 +125,11 @@ private fun HealthRecordDetail(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(healthRecordDate(record.createdAt), color = TextSecondary)
-        Text(knownGuide?.title ?: "Dugaan dari layanan", style = MaterialTheme.typography.headlineSmall)
+        Text(knownGuide?.title?.removePrefix("Dugaan ")?.replaceFirstChar { it.uppercase() } ?: record.candidate.label, style = MaterialTheme.typography.headlineSmall)
         Text(record.candidate.label, style = MaterialTheme.typography.bodyLarge)
         HealthCaution(
-            if (record.uncertain) "Hasil tersimpan belum bisa dipastikan. Catatan perkembangan tidak mengubah dugaan menjadi diagnosis."
-            else "Hasil tersimpan adalah dugaan dari foto, bukan kepastian penyakit atau jaminan tanaman sehat.",
+            if (record.uncertain) "Ambil foto gejala dari dekat untuk pemeriksaan berikutnya."
+            else "Pantau perubahan tanaman dan catat perawatannya.",
         )
         record.photoRefs.forEachIndexed { index, path ->
             PlantPhoto(

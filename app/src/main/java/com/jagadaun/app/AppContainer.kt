@@ -13,11 +13,13 @@ import com.jagadaun.app.data.identification.IdentificationClient
 import com.jagadaun.app.domain.Origin
 import com.jagadaun.app.domain.Plant
 import com.jagadaun.app.domain.Reminder
+import com.jagadaun.app.reminders.ReminderScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -30,12 +32,15 @@ class AppContainer(context: Context) {
     val identificationClient = IdentificationClient(context, photos)
     private val plantRepository = PlantRepository(database, photos)
     val healthRecords = HealthRecordRepository(database, photos)
-    private val reminderRepository = ReminderRepository(database.reminderDao(), database.careEventDao())
+    private val reminderRepository = ReminderRepository(database)
+    private val reminderScheduler = ReminderScheduler(context)
 
     val plants: StateFlow<List<Plant>> =
         plantRepository.observePlants().stateIn(scope, SharingStarted.Eagerly, emptyList())
     val reminders: StateFlow<List<Reminder>> =
-        reminderRepository.observeReminders().stateIn(scope, SharingStarted.Eagerly, emptyList())
+        reminderRepository.observeReminders()
+            .onEach { reminderScheduler.sync(it) }
+            .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     // --- Kebun Saya ---
 
@@ -65,13 +70,14 @@ class AppContainer(context: Context) {
 
     // --- Pengingat ---
 
-    fun addReminder(plantId: String, careType: String, intervalDays: Int, preferredTime: String, nextDue: Long) {
+    fun addReminder(plantId: String, careType: String, intervalDays: Int, preferredTime: String, nextDue: Long, zoneId: String) {
         val reminder = Reminder(
             id = UUID.randomUUID().toString(),
             plantId = plantId,
             careType = careType,
             intervalDays = intervalDays,
             preferredTime = preferredTime,
+            zoneId = zoneId,
             active = true,
             nextDue = nextDue,
         )
@@ -86,9 +92,13 @@ class AppContainer(context: Context) {
         scope.launch { reminderRepository.delete(id) }
     }
 
+    fun refreshReminderNotifications() {
+        scope.launch { reminderScheduler.sync(reminders.value, force = true) }
+    }
+
     /** Tandai selesai: geser jadwal berikutnya sebesar interval. */
-    fun completeReminder(id: String) {
-        scope.launch { reminderRepository.complete(id) }
+    fun completeReminder(id: String, expectedDue: Long) {
+        scope.launch { reminderRepository.complete(id, expectedDue) }
     }
 
 }

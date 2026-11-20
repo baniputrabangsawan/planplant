@@ -66,8 +66,6 @@ import com.jagadaun.app.ui.theme.TextSecondary
 import com.jagadaun.app.ui.theme.Warning
 import com.jagadaun.app.ui.theme.WarningContainer
 import java.io.IOException
-import java.text.NumberFormat
-import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -79,6 +77,9 @@ fun HealthScreen(
     plantId: String?,
     onBack: () -> Unit,
     onOpenHistory: () -> Unit,
+    cameraPhotos: List<String>,
+    onTakePhoto: () -> Unit,
+    onCameraPhotosConsumed: () -> Unit,
 ) {
     val plants by container.plants.collectAsStateWithLifecycle()
     val plant = plants.firstOrNull { it.id == plantId }
@@ -120,11 +121,23 @@ fun HealthScreen(
     }
     BackHandler(onBack = leave)
     val result = state.result
-    var selectedCode by remember(result) { mutableStateOf(result?.candidates?.firstOrNull()?.code) }
-    val selected = result?.candidates?.firstOrNull { it.code == selectedCode }
+    val selected = result?.candidates?.firstOrNull()
     val knownGuide = remember(selected?.code) { selected?.let { HealthGuides.forCode(it.code) } }
     val specificGuide = knownGuide.takeIf { result?.uncertain == false && (selected?.score ?: 0.0) >= 0.5 }
 
+    LaunchedEffect(cameraPhotos) {
+        if (cameraPhotos.isNotEmpty()) {
+            val updated: List<String?> = if (cameraPhotos.size > 1) cameraPhotos else {
+                photoRefs.mapIndexed { index, path -> if (index == activeSlot) cameraPhotos.single() else path }
+            }
+            val discarded = attached.filter { it !in updated }
+            model.setPhotos(updated.filterNotNull())
+            photoRefs = updated
+            saved = false
+            onCameraPhotosConsumed()
+            withContext(Dispatchers.IO) { discarded.forEach { discardHealthDraft(container.photos, it) } }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         ScreenTopBar("Periksa tanaman", leave)
         Column(
@@ -134,7 +147,7 @@ fun HealthScreen(
             plant?.let { Text(it.displayName, style = MaterialTheme.typography.titleLarge) }
             SecondaryButton("Riwayat pemeriksaan", onOpenHistory, enabled = !busy && !state.loading)
             Text(
-                "Siapkan sampai 3 foto dari tanaman yang sama: seluruh tanaman, gejala dari dekat, dan sisi lain daun. Satu foto cukup untuk mulai; foto tambahan membantu memperlihatkan gejala.",
+                "Foto tanaman utuh, bagian bermasalah, dan sisi lain. Gunakan tanaman yang sama.",
                 style = MaterialTheme.typography.bodyLarge,
             )
             Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -177,7 +190,7 @@ fun HealthScreen(
             }
             SecondaryButton(
                 text = "Ambil foto: ${healthPhotoTitles[activeSlot].lowercase()}",
-                onClick = photos.takePhoto,
+                onClick = onTakePhoto,
                 enabled = !busy && !state.loading,
                 icon = Icons.Filled.CameraAlt,
             )
@@ -202,7 +215,7 @@ fun HealthScreen(
                 ) { Text("Hapus foto ini") }
             }
             Text(
-                "${attached.size} foto dikirim melalui Cloudflare ke Pl@ntNet hanya setelah Anda mengetuk Periksa foto atau Coba lagi. Foto koleksi tidak diubah. Satu pemeriksaan memakai satu kuota meskipun berisi beberapa foto.",
+                "${attached.size} foto • 1 percobaan keluarga (1 kredit penyedia). Foto dikirim ke Pl@ntNet setelah Anda mengetuk Periksa foto.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
             )
@@ -229,66 +242,15 @@ fun HealthScreen(
             (photos.error ?: state.errorCode?.let(::healthErrorMessage))?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             }
-            HealthCaution(
-                "Hasil hanya dugaan dari foto, bukan kepastian penyakit. Layanan belum mencakup semua tanaman dan tidak memastikan tanaman sehat. Salah siram atau kekurangan hara juga bisa menimbulkan gejala serupa.",
-            )
-            if (result != null) {
-                HealthHeading("Kemungkinan penyebab")
-                Text(
-                    "Ketuk dugaan untuk membaca penjelasan. Skor hanya urutan kecocokan dari layanan, bukan persentase kepastian.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                )
-                if (result.uncertain) {
-                    HealthCaution("Belum bisa dipastikan. Ambil foto lebih jelas atau bagian lain dari tanaman yang sama. Untuk sementara, gunakan langkah pemeriksaan umum di bawah.")
+            if (selected != null) {
+                HealthHeading(knownGuide?.title?.removePrefix("Dugaan ")?.replaceFirstChar { it.uppercase() } ?: selected.label)
+                if (result?.uncertain == true) {
+                    Text("Ambil ulang bagian bergejala dari dekat; gunakan langkah awal berikut.", color = Warning)
                 }
-                Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    result.candidates.forEach { candidate ->
-                        val title = remember(candidate.code) { HealthGuides.forCode(candidate.code)?.title }
-                        val score = remember(candidate.score) {
-                            NumberFormat.getNumberInstance(Locale.forLanguageTag("id-ID")).apply {
-                                maximumFractionDigits = 3
-                            }.format(candidate.score)
-                        }
-                        Surface(
-                            color = if (selectedCode == candidate.code) SoftAccent else MaterialTheme.colorScheme.surface,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Row(
-                                Modifier.selectable(
-                                    selected = selectedCode == candidate.code,
-                                    enabled = !busy && !saved,
-                                    role = Role.RadioButton,
-                                    onClick = { selectedCode = candidate.code },
-                                ).heightIn(min = 72.dp).padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                RadioButton(selected = selectedCode == candidate.code, onClick = null)
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(title ?: "Masalah belum dikenal dalam panduan", style = MaterialTheme.typography.titleLarge)
-                                    Text(candidate.label, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-                                    Text("Skor layanan: $score", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                                }
-                            }
-                        }
-                    }
-                }
-                if (knownGuide != null) {
-                    HealthHeading("Cocokkan gejalanya")
-                    Text(knownGuide.symptoms, style = MaterialTheme.typography.bodyLarge)
-                }
-                if (specificGuide == null && !result.uncertain) {
-                    Text("Panduan khusus untuk dugaan ini belum tersedia atau kecocokannya masih rendah. Langkah umum di bawah bukan pengobatan penyakit tertentu.", color = TextSecondary)
-                }
+                HealthGuideContent(specificGuide ?: HealthGuides.general)
             }
             if (result != null && selected != null) {
-                HealthHeading("Simpan untuk dipantau")
-                Text(
-                    "Simpan dugaan yang dipilih dan foto di HP agar bisa dibandingkan nanti. Catatan tidak dikirim ke layanan analisis.",
-                    color = TextSecondary,
-                )
+                HealthHeading("Pantau perkembangan")
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it.take(2000) },
@@ -341,8 +303,6 @@ fun HealthScreen(
                 )
                 saveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
-            HealthGuideContent(specificGuide ?: HealthGuides.general)
-            HealthCaution("Jika layu mendadak, busuk meluas, atau banyak tanaman ikut terkena, minta bantuan penyuluh pertanian atau petugas POPT. Jangan memakai pestisida hanya berdasarkan hasil foto.")
             HealthSourceLink("Analisis foto oleh Pl@ntNet", "https://plantnet.org/")
         }
     }
@@ -362,12 +322,21 @@ internal fun HealthCaution(text: String) {
 
 @Composable
 internal fun HealthGuideContent(guide: HealthGuide) {
-    HealthHeading("Langkah awal yang aman")
-    guide.firstSteps.forEachIndexed { index, text -> Text("${index + 1}. $text", style = MaterialTheme.typography.bodyLarge) }
-    HealthHeading("Pencegahan")
-    guide.prevention.forEachIndexed { index, text -> Text("${index + 1}. $text", style = MaterialTheme.typography.bodyLarge) }
-    HealthHeading("Sumber panduan")
-    guide.sources.forEach { HealthSourceLink(it.title, it.url) }
+    HealthHeading("Lakukan sekarang")
+    guide.firstSteps.take(2).forEachIndexed { index, text ->
+        Text("${index + 1}. $text", style = MaterialTheme.typography.bodyLarge)
+    }
+    var expanded by rememberSaveable(guide.title) { mutableStateOf(false) }
+    TextButton(onClick = { expanded = !expanded }) {
+        Text(if (expanded) "Tutup panduan" else "Lihat pencegahan dan sumber")
+    }
+    if (expanded) {
+        guide.firstSteps.drop(2).forEach { Text(it, style = MaterialTheme.typography.bodyLarge) }
+        HealthHeading("Pencegahan")
+        guide.prevention.forEach { Text(it, style = MaterialTheme.typography.bodyLarge) }
+        guide.sources.forEach { HealthSourceLink(it.title, it.url) }
+        Text("Jika kerusakan meluas, hubungi penyuluh. Jangan memakai pestisida hanya berdasarkan foto.", color = TextSecondary)
+    }
 }
 
 @Composable

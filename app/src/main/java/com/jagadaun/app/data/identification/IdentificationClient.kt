@@ -6,6 +6,7 @@ import com.jagadaun.app.BuildConfig
 import com.jagadaun.app.data.photos.PhotoStore
 import com.jagadaun.app.domain.HealthResult
 import com.jagadaun.app.domain.IdentificationResult
+import com.jagadaun.app.domain.PlantAnalysisResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -25,9 +26,17 @@ import javax.net.ssl.HttpsURLConnection
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Uploads only a freshly encoded bitmap, and only for an explicit identification or health check. */
+/** Pl@ntNet's documented maximum for one plant individual. */
+const val MAX_ANALYSIS_PHOTOS = 5
+
+/** Uploads freshly encoded bitmaps only for an explicit plant analysis or focused check. */
 class IdentificationClient(context: Context, private val photos: PhotoStore) {
     private val preferences = context.applicationContext.getSharedPreferences("identification", Context.MODE_PRIVATE)
+    suspend fun analyze(photoRefs: List<String>): PlantAnalysisResult {
+        if (photoRefs.size !in 1..MAX_HEALTH_IMAGES) throw IdentificationException("INVALID_IMAGE")
+        return request(photoRefs, "/v1/analyze", ::parsePlantAnalysisResponse)
+    }
+
     suspend fun identify(photoRef: String): IdentificationResult =
         request(listOf(photoRef), null, ::parseIdentificationResponse)
 
@@ -69,10 +78,13 @@ class IdentificationClient(context: Context, private val photos: PhotoStore) {
         }
         val images = photoRefs.map { photoRef ->
             currentCoroutineContext().ensureActive()
-            val bitmap = photos.readBitmap(photoRef, 1600) ?: throw IdentificationException("INVALID_IMAGE")
+            // Pl@ntNet resizes the smaller side to 1280 px and never upscales, so send the
+            // stored 2048 px draft instead of a 1600 px cap that can fall below its target.
+            val bitmap = photos.readBitmap(photoRef, 2048) ?: throw IdentificationException("INVALID_IMAGE")
             try {
                 BoundedJpegOutput().also {
-                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it)) {
+                    // Provider recommends JPEG quality 90 for identification uploads.
+                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it)) {
                         throw IdentificationException("INVALID_IMAGE")
                     }
                     if (it.size() == 0) throw IdentificationException("INVALID_IMAGE")
@@ -191,7 +203,7 @@ class IdentificationClient(context: Context, private val photos: PhotoStore) {
 
     private companion object {
         const val MAX_IMAGE_BYTES = 4 * 1024 * 1024
-        const val MAX_HEALTH_IMAGES = 3
+        const val MAX_HEALTH_IMAGES = MAX_ANALYSIS_PHOTOS
         val CRLF = byteArrayOf(13, 10)
     }
 }

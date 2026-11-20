@@ -23,8 +23,8 @@ object HealthGuides {
         title = "Amati dulu, jangan langsung mengobati",
         symptoms = "Bercak, daun menguning, dan layu dapat memiliki banyak penyebab, termasuk air, cahaya, hama, atau penyakit. Foto saja tidak memastikan penyebab maupun kesehatan tanaman.",
         firstSteps = listOf(
-            "Periksa kedua sisi daun, pucuk, batang, dan kelembapan media. Catat sejak kapan gejala muncul dan perubahan perawatannya.",
-            "Jika ada dugaan hama atau penyakit menular, pisahkan pot dari tanaman lain bila memungkinkan; cuci tangan setelah memegangnya.",
+            "Periksa kedua sisi daun, pucuk, batang, dan kelembapan tanah.",
+            "Jika ada hama, pisahkan pot dan cuci tangan setelah memegangnya.",
             "Periksa lubang drainase dan buang air yang menggenang di tatakan; jangan menambah air hanya karena daun layu jika media masih basah.",
             escalation,
         ),

@@ -1,11 +1,14 @@
 package com.jagadaun.app.data.identification
 
+import android.util.JsonReader
+import android.util.JsonToken
 import com.jagadaun.app.domain.IdentificationResult
 import com.jagadaun.app.domain.PlantCandidate
 import org.json.JSONException
 import org.json.JSONObject
-import org.json.JSONTokener
+import java.io.IOException
 import java.io.InputStream
+import java.io.StringReader
 
 /** Only stable codes cross into UI; provider response bodies are never displayed or logged. */
 class IdentificationException(val code: String) : Exception(code)
@@ -60,36 +63,91 @@ internal fun throwHttpError(status: Int, body: String): Nothing {
 internal fun parseIdentificationResponse(status: Int, body: String): IdentificationResult {
     if (status != 200) throwHttpError(status, body)
     try {
-        val tokener = JSONTokener(body)
-        val root = tokener.nextValue() as? JSONObject ?: invalidResponse()
-        if (tokener.nextClean() != '\u0000') invalidResponse()
-        val uncertain = root.get("uncertain") as? Boolean ?: invalidResponse()
-        val attribution = root.getJSONObject("attribution")
-        if (attribution.get("name") != "Pl@ntNet" || attribution.get("url") != "https://plantnet.org/") {
-            invalidResponse()
+        JsonReader(StringReader(body)).use { reader ->
+            reader.isLenient = false
+            val result = readIdentificationResult(reader)
+            if (reader.peek() != JsonToken.END_DOCUMENT) invalidResponse()
+            return result
         }
-        val rows = root.getJSONArray("candidates")
-        if (rows.length() > 3) invalidResponse()
-        val candidates = ArrayList<PlantCandidate>(rows.length())
-        for (index in 0 until rows.length()) {
-            val row = rows.getJSONObject(index)
-            val scientificName = validName(row.get("scientificName"))
-            val commonName = when (val value = row.get("commonName")) {
-                JSONObject.NULL -> null
-                else -> validName(value)
-            }
-            val score = (row.get("score") as? Number)?.toDouble() ?: invalidResponse()
-            if (!score.isFinite() || score !in 0.0..1.0) invalidResponse()
-            candidates += PlantCandidate(scientificName, commonName, score)
-        }
-        return IdentificationResult(candidates.sortedByDescending { it.score }, uncertain)
-    } catch (_: JSONException) {
+    } catch (_: IOException) {
+        invalidResponse()
+    } catch (_: IllegalStateException) {
         invalidResponse()
     }
 }
 
-private fun validName(value: Any): String {
-    val name = value as? String ?: invalidResponse()
+internal fun readIdentificationResult(reader: JsonReader): IdentificationResult {
+    var candidates: ArrayList<PlantCandidate>? = null
+    var uncertain: Boolean? = null
+    var attributed = false
+    reader.beginObject()
+    while (reader.hasNext()) {
+        when (reader.nextName()) {
+            "candidates" -> {
+                if (candidates != null) invalidResponse()
+                val rows = ArrayList<PlantCandidate>(3)
+                reader.beginArray()
+                while (reader.hasNext()) {
+                    if (rows.size == 3) invalidResponse()
+                    rows += readPlantCandidate(reader)
+                }
+                reader.endArray()
+                candidates = rows
+            }
+            "uncertain" -> {
+                if (uncertain != null || reader.peek() != JsonToken.BOOLEAN) invalidResponse()
+                uncertain = reader.nextBoolean()
+            }
+            "attribution" -> {
+                if (attributed) invalidResponse()
+                readPlantnetAttribution(reader)
+                attributed = true
+            }
+            else -> reader.skipValue()
+        }
+    }
+    reader.endObject()
+    if (!attributed) invalidResponse()
+    val ranked = candidates ?: invalidResponse()
+    ranked.sortByDescending { it.score }
+    return IdentificationResult(ranked, uncertain ?: invalidResponse())
+}
+
+private fun readPlantCandidate(reader: JsonReader): PlantCandidate {
+    var scientificName: String? = null
+    var commonName: String? = null
+    var commonNameRead = false
+    var score: Double? = null
+    reader.beginObject()
+    while (reader.hasNext()) {
+        when (reader.nextName()) {
+            "scientificName" -> {
+                if (scientificName != null || reader.peek() != JsonToken.STRING) invalidResponse()
+                scientificName = validName(reader.nextString())
+            }
+            "commonName" -> {
+                if (commonNameRead) invalidResponse()
+                commonNameRead = true
+                commonName = when (reader.peek()) {
+                    JsonToken.NULL -> { reader.nextNull(); null }
+                    JsonToken.STRING -> validName(reader.nextString())
+                    else -> invalidResponse()
+                }
+            }
+            "score" -> {
+                if (score != null || reader.peek() != JsonToken.NUMBER) invalidResponse()
+                score = reader.nextString().toDoubleOrNull() ?: invalidResponse()
+                if (!score.isFinite() || score !in 0.0..1.0) invalidResponse()
+            }
+            else -> reader.skipValue()
+        }
+    }
+    reader.endObject()
+    if (!commonNameRead) invalidResponse()
+    return PlantCandidate(scientificName ?: invalidResponse(), commonName, score ?: invalidResponse())
+}
+
+private fun validName(name: String): String {
     if (name.length !in 1..200 || name.isBlank() || name.any { it.isISOControl() }) invalidResponse()
     return name.trim()
 }

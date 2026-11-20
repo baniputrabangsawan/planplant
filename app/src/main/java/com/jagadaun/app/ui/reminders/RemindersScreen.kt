@@ -80,6 +80,8 @@ fun RemindersScreen(
             Spacer(Modifier.height(8.dp))
             Text("Pengingat", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
             Spacer(Modifier.height(16.dp))
+            ReminderPermissionNotice(container)
+            Spacer(Modifier.height(12.dp))
             if (reminders.isEmpty()) {
                 EmptyState(
                     icon = Icons.Filled.Notifications,
@@ -95,7 +97,7 @@ fun RemindersScreen(
                         ReminderCard(
                             reminder = reminder,
                             plantName = plants.firstOrNull { it.id == reminder.plantId }?.displayName ?: "Tanaman",
-                            onComplete = { container.completeReminder(reminder.id) },
+                            onComplete = { container.completeReminder(reminder.id, reminder.nextDue) },
                             onEdit = { onEdit(reminder.id) },
                             onTogglePause = { container.updateReminder(reminder.copy(active = !reminder.active)) },
                             onDelete = { pendingDelete = reminder },
@@ -106,7 +108,7 @@ fun RemindersScreen(
                         ReminderCard(
                             reminder = reminder,
                             plantName = plants.firstOrNull { it.id == reminder.plantId }?.displayName ?: "Tanaman",
-                            onComplete = { container.completeReminder(reminder.id) },
+                            onComplete = { container.completeReminder(reminder.id, reminder.nextDue) },
                             onEdit = { onEdit(reminder.id) },
                             onTogglePause = { container.updateReminder(reminder.copy(active = !reminder.active)) },
                             onDelete = { pendingDelete = reminder },
@@ -117,7 +119,7 @@ fun RemindersScreen(
                         ReminderCard(
                             reminder = reminder,
                             plantName = plants.firstOrNull { it.id == reminder.plantId }?.displayName ?: "Tanaman",
-                            onComplete = { container.completeReminder(reminder.id) },
+                            onComplete = { container.completeReminder(reminder.id, reminder.nextDue) },
                             onEdit = { onEdit(reminder.id) },
                             onTogglePause = { container.updateReminder(reminder.copy(active = !reminder.active)) },
                             onDelete = { pendingDelete = reminder },
