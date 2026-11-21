@@ -176,4 +176,34 @@ class IdentificationUiStateTest {
         )
         assertEquals(plant, state.selectedCandidate)
     }
+
+    @Test
+    fun `choosing another supplied candidate changes the saved identity without discarding health`() {
+        val alternative = PlantCandidate("Carica papaya", "Pepaya", 0.45)
+        val state = IdentificationUiState(
+            photoRefs = listOf("draft.jpg"),
+            result = IdentificationResult(listOf(plant, alternative), uncertain = true),
+            selectedCandidate = plant,
+            healthResult = health,
+            healthNotes = "Tetap simpan catatan",
+        )
+        val selected = state.withCandidate(alternative)
+        assertEquals(alternative, selected.selectedCandidate)
+        assertSame(health, selected.healthResult)
+        assertEquals(state.photoRefs, selected.photoRefs)
+        assertEquals(state.healthNotes, selected.healthNotes)
+    }
+
+    @Test
+    fun `unknown low-score and busy selections cannot replace the confirmed candidate`() {
+        val weak = PlantCandidate("Carica papaya", "Pepaya", 0.29)
+        val state = IdentificationUiState(
+            result = IdentificationResult(listOf(plant, weak), uncertain = true),
+            selectedCandidate = plant,
+        )
+        assertSame(state, state.withCandidate(weak))
+        assertSame(state, state.withCandidate(plant.copy(scientificName = "Foreign species")))
+        val busy = state.copy(savingHealth = true)
+        assertSame(busy, busy.withCandidate(plant))
+    }
 }

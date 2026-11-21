@@ -52,20 +52,36 @@ Inspeksi menu tambahan memakai REA menunjukkan **Home**, **Diagnose**, kamera pu
 
 REA mengamati kamera identifikasi PictureThis dengan bingkai fokus (`ev_7e356d0d2d784304f9f26011a8c0a530e23769d09460f1de2a41477973f351d5`) dan mode **360 Identify** dengan tiga slot: seluruh tanaman dari depan, dekat dari satu sisi, lalu sisi lain (`ev_8979bdf2d4ad5670f37628c74c8947026d4f70f76f303a786419deb818da9a2f`, `ev_4470c105dc0910647841cfdbe84612a9144d987269332b5a860cc0b747d3d26d`, `ev_141cb1cbb6cbe7b253923f359a1c702583aadf23afa1d31ec134a5cd7d9512d1`). Done aktif setelah satu foto; tiga foto wajib dalam mode 360° Jaga Daun merupakan pilihan desain sendiri. Tidak ada unggahan referensi atau pembelian. Bukti privat: `~/.local/share/jagadaun-rea/camera-20261118/`.
 
+## Redesign disetujui — 21 November 2026
+
+Pilihan pengguna sebelum implementasi/build: **struktur Greg + deretan kartu Lovi**. Awalnya dikerjakan dengan tiga tab ala Play, lalu **pengguna meminta navigasi seperti PictureThis**: lima tujuan dengan tombol kamera menonjol di tengah, warna hijau sendiri, langsung membuka kamera, dan galeri baru ditawarkan di dalam kamera. Kemiripan ada pada hierarki, pengelompokan, foto, kartu, dan posisi kamera; bukan menyalin merek/aset, tema gelap, atau ukuran teks kecil.
+
+| Referensi Mobbin | Keputusan yang diterapkan |
+| --- | --- |
+| [Greg — ambil/unggah foto](https://mobbin.com/screens/817811ad-04cc-411f-8734-dff40d15fc7d) | Kenali Tanaman paling menonjol, Pilih dari Galeri langsung terlihat. Referensi ini onboarding; beranda gabungan adalah rancangan Jaga Daun. |
+| [Greg — koleksi grid](https://mobbin.com/screens/fc2790f8-695a-4cad-9b3a-a630f53062cc) | Grid foto ditambah nama dan jadwal nyata di bawah foto; tidak menyalin profil sosial. |
+| [Greg — detail foto](https://mobbin.com/screens/5995dd7d-2433-4099-b1b5-90da558c263b) dan [panduan](https://mobbin.com/screens/93bbddc2-4da8-4edd-b3ba-95ec25473202) | Foto besar, nama umum/ilmiah, bagian jadwal, panduan bersumber, dan catatan yang mudah dipindai. |
+| [Greg — jadwal](https://mobbin.com/screens/c802b78e-a223-4ea6-b64a-b67b397e04ba) | Thumbnail + nama + waktu, kelompok Hari Ini/Berikutnya/Dijeda; tidak menyalin takaran air referensi. |
+| [Lovi — kartu horizontal](https://mobbin.com/screens/7e9161bc-36b9-41f2-a6d4-0e99cef2936a) | Foto dan kartu tanaman dalam deret dengan sebagian kartu berikutnya terlihat, tanpa carousel otomatis. Teks penting di luar foto. |
+| [Play — navigasi tiga tujuan](https://mobbin.com/screens/5a796023-ef12-4dc2-bf87-59a9c3c6daf9) | Permukaan putih membulat, kapsul hijau pucat aktif, ikon dan label tetap terlihat, dengan inset navigasi sistem. |
+
+Palet tetap #24543D / #F8F7F2 / #E5EFE5 / putih. DM Sans, isi 16 sp, metadata 14 sp, jarak 8/12/16/24 dp, target minimal 48 dp. Tinggi teks tidak dikunci; aksi pengingat membungkus. Transisi fade 120/90 ms dan perubahan pilihan 100 ms mengikuti skala animasi sistem. Tab aktif tidak memuat ulang atau menggulir ke atas; kembali memulihkan posisi dan pencarian.
+
 ## Navigasi dan layar
 
-Navigasi bawah menyediakan **Beranda**, **Periksa**, **Foto**, **Kebun**, dan **Lainnya**. **Foto** adalah tindakan pemilihan kamera/galeri, bukan layar kosong. Pengingat dibuka dari Beranda atau Lainnya. Pratinjau, hasil, detail tanaman, pengingat, riwayat, dan formulir memiliki tombol kembali.
+Navigasi bawah menyediakan lima tujuan: **Beranda**, **Periksa**, **kamera**, **Kebun**, **Lainnya**. Ikon kamera bulat berwarna hijau tua menonjol ±26 dp di atas permukaan bar dan membuka kamera langsung; **Pilih dari Galeri** ada di dalam layar kamera. Halaman sekunder, kamera, detail, dan formulir punya tombol kembali tanpa bottom bar.
 
 | Layar | Tata letak dan tindakan |
 | --- | --- |
-| Beranda | Nama **Jaga Daun**, versi aktual BuildConfig, kamera/galeri untuk analisis terpadu, pemeriksaan terarah, ringkasan perawatan hari ini dari jadwal nyata, serta akses koleksi dan riwayat. Tidak menampilkan cuaca atau hasil simulasi. |
-| Pratinjau | Foto dominan; **Analisis tanaman**, **Ganti foto**, dan tambah manual. Jelaskan satu percobaan keluarga menjalankan dua analisis Pl@ntNet. Pengiriman tidak dimulai otomatis saat membuka atau memutar layar. |
-| Hasil tanaman | Satu hasil jenis dan satu kondisi teratas, dua langkah tindakan, serta pencegahan/sumber yang dapat dibuka. Tidak menampilkan daftar kandidat atau skor. Hasil kurang kuat meminta foto ulang secara singkat. Kegagalan parsial tidak menghapus bagian yang berhasil. Simpan riwayat mempertahankan semua foto; identitas dapat disimpan ke koleksi memakai foto pertama. |
-| Kebun Saya | Pencarian nama umum/ilmiah pada koleksi lokal, kartu foto dan pengingat terdekat, keadaan kosong dan tidak ada hasil yang berbeda. **Tambah manual** tetap tersedia. Detail memuat catatan, panduan yang tersedia, dan pemeriksaan terarah. |
-| Pengingat | Kelompokkan **Hari ini** dan **Berikutnya**. Tampilkan nama tanaman, kegiatan, dan jadwal. Sediakan **Tandai selesai**, **Ubah**, dan **Jeda**. |
-| Periksa | Petunjuk pengambilan 1–3 foto, tombol pemeriksaan baru, daftar tanaman koleksi yang dapat diperiksa, dan riwayat. Pemeriksaan terarah mempertahankan slot **Seluruh tanaman**, **Gejala dari dekat**, dan **Sisi lain daun**. |
+| Kenali | Kenali Tanaman dominan, Pilih dari Galeri terlihat, Periksa Masalah, kartu horizontal tanaman terbaru + Lihat Semua, dua pengingat terdekat, sekitar, riwayat, dan panduan. Semua berasal dari data nyata. |
+| Pratinjau | Deret foto horizontal; Analisis tanaman, tambah sudut, dan tambah manual. Pengiriman hanya setelah tindakan eksplisit. Jelaskan satu percobaan keluarga menjalankan dua analisis Pl@ntNet. |
+| Hasil tanaman | Kandidat dengan skor minimal 0,30 dapat dipilih dalam deret horizontal, tanpa persentase kepastian. Pilihan awal hasil teratas; status Dipilih terlihat. Pilihan tidak membuang hasil kondisi, catatan, atau foto. |
+| Kebun Saya | Pencarian nama umum/ilmiah, deret terbaru maksimal empat tanaman, Lihat Semua ke grid adaptif, nama dan perawatan di bawah foto. Empty/no-match memiliki tindakan lanjutan; Tambah manual tetap ada. |
+| Detail Tanaman | Foto utama; galeri horizontal hanya jika beberapa foto tersimpan benar-benar ada (koleksi dan pemeriksaan terkait). Nama, ilmiah, jadwal nyata, panduan bersumber, catatan, ubah, dan hapus. |
+| Pengingat | Hari Ini termasuk terlambat, Berikutnya, Dijeda. Foto kecil, nama, kegiatan, tanggal/jam. Tandai Selesai dominan, Ubah/Jeda jelas, Hapus terpisah. Umpan balik sukses hanya setelah transaksi tersimpan. |
+| Periksa | Pemeriksaan terarah 1–5 foto, daftar tanaman yang dapat diperiksa, serta riwayat; hasil bukan diagnosis pasti. |
 | Riwayat pemeriksaan | Daftar hasil bertanggal; dari detail tanaman hanya pemeriksaannya, dari menu utama semua. Baca hasil dan foto tanpa internet, catat perkembangan menurut pengguna, atau hapus dengan konfirmasi. Penghapusan pemeriksaan tidak menghapus tanaman atau foto yang masih dipakai tanaman. |
-| Lainnya | Pengingat, riwayat, pemeriksaan terarah, serta panduan umum lokal yang dapat dibuka/tutup dan memiliki tautan sumber. Tidak menampilkan alat tanpa implementasi. |
+| Panduan & alat | Pengingat, riwayat, pemeriksaan terarah, sekitar, dan panduan lokal bersumber. Tidak menampilkan alat tanpa implementasi. |
 
 ## Teks dan keadaan penting
 

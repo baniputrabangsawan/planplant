@@ -9,6 +9,7 @@ import com.jagadaun.app.data.repository.ReminderRepository
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -70,5 +71,24 @@ class ReminderCompletionTest {
         } finally {
             database.close()
         }
+    }
+
+    @Test fun pausingAfterCompletionPreservesTheAdvancedScheduleAndCannotResurrectDeletedReminder() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val database = Room.inMemoryDatabaseBuilder(context, JagaDaunDatabase::class.java).build()
+        try {
+            val due = System.currentTimeMillis() - 86_400_000L
+            database.reminderDao().upsert(ReminderEntity("test-reminder", "test-plant", "Siram", 7, "07:00", "Asia/Jakarta", true, due))
+            val repository = ReminderRepository(database)
+            assertTrue(repository.complete("test-reminder", due))
+            val advanced = database.reminderDao().getById("test-reminder")!!.nextDue
+            assertTrue(repository.setActive("test-reminder", false))
+            val paused = database.reminderDao().getById("test-reminder")!!
+            assertFalse(paused.active)
+            assertEquals(advanced, paused.nextDue)
+            assertFalse(repository.complete("test-reminder", due))
+            repository.delete("test-reminder")
+            assertFalse(repository.setActive("test-reminder", true))
+        } finally { database.close() }
     }
 }

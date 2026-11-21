@@ -32,7 +32,7 @@ interface NearbySource {
     suspend fun nearby(latitude: Double, longitude: Double, radiusKm: Int): NearbyPlants
 }
 
-class NearbyClient(context: Context) : NearbySource {
+class NearbyClient(private val context: Context) : NearbySource {
     private val preferences = context.applicationContext
         .getSharedPreferences("identification", Context.MODE_PRIVATE)
 
@@ -43,6 +43,15 @@ class NearbyClient(context: Context) : NearbySource {
         return withTimeoutOrNull(40_000) {
             request(latitude, longitude, radiusKm)
         } ?: throw NearbyException("Pencarian terlalu lama. Silakan coba lagi.")
+    }
+
+    /**
+     * Pencarian cepat untuk Beranda: memakai lokasi perkiraan yang sudah tersedia di perangkat.
+     * Pemanggil WAJIB memeriksa izin lebih dulu; fungsi ini tidak meminta izin.
+     */
+    suspend fun nearbyDefault(radiusKm: Int = 10): NearbyPlants {
+        val location = com.jagadaun.app.ui.nearby.SystemLocationFixes(context).current()
+        return nearby(location.latitude, location.longitude, radiusKm)
     }
 
     private suspend fun request(latitude: Double, longitude: Double, radiusKm: Int): NearbyPlants =
@@ -180,7 +189,11 @@ class NearbyClient(context: Context) : NearbySource {
             )
         }
         if (sum > total || (total == 0 && species.isNotEmpty())) invalidResponse()
-        NearbyPlants(species, radius, total)
+        // Pengguna meminta setiap kartu punya gambar. Spesies tanpa foto berlisensi CC tidak
+        // ditampilkan sama sekali; menyembunyikan kartu lebih jujur daripada ubin kosong.
+        // Filter ada di parser agar cache lama ikut bersih tanpa menunggu kedaluwarsa.
+        val withPhoto = species.filter { it.photo != null }
+        NearbyPlants(withPhoto, radius, total)
     } catch (_: JSONException) {
         invalidResponse()
     }

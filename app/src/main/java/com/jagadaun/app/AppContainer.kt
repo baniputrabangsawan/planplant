@@ -70,7 +70,7 @@ class AppContainer(context: Context) {
 
     // --- Pengingat ---
 
-    fun addReminder(plantId: String, careType: String, intervalDays: Int, preferredTime: String, nextDue: Long, zoneId: String) {
+    suspend fun addReminder(plantId: String, careType: String, intervalDays: Int, preferredTime: String, nextDue: Long, zoneId: String) {
         val reminder = Reminder(
             id = UUID.randomUUID().toString(),
             plantId = plantId,
@@ -81,25 +81,23 @@ class AppContainer(context: Context) {
             active = true,
             nextDue = nextDue,
         )
-        scope.launch { reminderRepository.add(reminder) }
+        reminderRepository.add(reminder)
     }
 
-    fun updateReminder(reminder: Reminder) {
-        scope.launch { reminderRepository.update(reminder) }
-    }
+    suspend fun updateReminder(reminder: Reminder): Boolean = reminderRepository.update(reminder)
 
-    fun deleteReminder(id: String) {
-        scope.launch { reminderRepository.delete(id) }
-    }
+    suspend fun setReminderActive(id: String, active: Boolean): Boolean =
+        reminderRepository.setActive(id, active)
+
+    suspend fun deleteReminder(id: String) = reminderRepository.delete(id)
 
     fun refreshReminderNotifications() {
         scope.launch { reminderScheduler.sync(reminders.value, force = true) }
     }
 
-    /** Tandai selesai: geser jadwal berikutnya sebesar interval. */
-    fun completeReminder(id: String, expectedDue: Long) {
-        scope.launch { reminderRepository.complete(id, expectedDue) }
-    }
+    /** Returns true only when the displayed occurrence was committed with its care event. */
+    suspend fun completeReminder(id: String, expectedDue: Long): Boolean =
+        reminderRepository.complete(id, expectedDue)
 
 }
 

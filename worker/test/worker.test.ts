@@ -511,13 +511,18 @@ test("health upload bounds announced and streamed multipart bytes before parsing
     "content-length": String(maximum + 1),
   }), environment(db)), 413, "IMAGE_TOO_LARGE");
   let canceled = false;
+  // Satu potongan yang sudah melebihi batas. highWaterMark 0 = tarik sesuai permintaan saja,
+  // jadi tidak ada potongan yang di-enqueue setelah worker membatalkan body (undici melempar
+  // ERR_INVALID_STATE bila controller masih meng-enqueue setelah stream ditutup).
+  let sent = false;
   const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new Uint8Array(maximum));
-      controller.enqueue(new Uint8Array(1));
+    pull(controller) {
+      if (sent) { controller.close(); return; }
+      sent = true;
+      controller.enqueue(new Uint8Array(maximum + 1));
     },
     cancel() { canceled = true; },
-  });
+  }, { highWaterMark: 0 });
   await expectError(await worker.fetch(healthRequest(stream, {
     "content-type": "multipart/form-data; boundary=health",
   }), environment(db)), 413, "IMAGE_TOO_LARGE");
@@ -1073,6 +1078,49 @@ test("nearby adds Indonesian names only when Wikipedia confirms the scientific n
   assert.equal(body.species[0].description, null);
   assert.equal(body.species[1].commonName, "Pisang nangka");
   assert.equal(body.species[1].wikiUrl, "https://id.wikipedia.org/wiki/Pisang_nangka");
+});
+
+test("nearby accepts a genus-confirmed article only when it is described as a taxon", async () => {
+  // Kasus nyata: artikel "Kremah" mengeja genus sedikit berbeda ("Altenanthera"), jadi intro
+  // tidak cocok persis. Nama diterima karena genus disebut DAN deskripsi menyatakan taksa.
+  // Sebaliknya judul genus "Pyrrosia" tidak boleh menjadi nama tanaman.
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.hostname === "id.wikipedia.org") {
+      const query = url.searchParams.get("gsrsearch") ?? "";
+      if (query.includes("Alternanthera sessilis")) {
+        return Response.json({
+          // Kasus nyata: tanpa field description sama sekali.
+          query: { pages: [{
+            title: "Kremah",
+            extract: "Kremah (Altenanthera sessilis) adalah tumbuhan obat Indonesia.",
+          }] },
+        });
+      }
+      if (query.includes("Pyrrosia lanceolata")) {
+        return Response.json({
+          query: { pages: [{
+            title: "Pyrrosia",
+            description: "marga tumbuh-tumbuhan",
+            extract: "Pyrrosia adalah marga pakis dari familia Polypodiaceae.",
+          }] },
+        });
+      }
+      return Response.json({ query: { pages: [] } });
+    }
+    if (url.searchParams.has("facet")) {
+      return Response.json(nearbyRanking([{ name: "1", count: 9 }, { name: "2", count: 4 }], 20));
+    }
+    const first = url.searchParams.get("speciesKey") === "1";
+    return Response.json({ results: [{
+      species: first ? "Alternanthera sessilis" : "Pyrrosia lanceolata",
+      decimalLatitude: -6.21, decimalLongitude: 106.82,
+    }] });
+  };
+  const body = await (await worker.fetch(nearbyRequest(), environment())).json();
+  assert.equal(body.species[0].commonName, "Kremah");
+  assert.equal(body.species[1].commonName, null);
+  assert.equal(body.species[1].wikiUrl, null);
 });
 
 test("nearby still succeeds when Wikipedia enrichment fails or is rate limited", async () => {

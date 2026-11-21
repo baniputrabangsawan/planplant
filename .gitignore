@@ -10,3 +10,6 @@ worker/.wrangler/
 .dev.vars
 *.jks
 *.keystore
+
+# Screenshot bukti lokal (bukan aset aplikasi)
+.proof-phone/

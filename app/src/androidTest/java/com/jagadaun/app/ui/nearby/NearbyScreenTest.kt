@@ -1,5 +1,12 @@
 package com.jagadaun.app.ui.nearby
 
+import android.Manifest
+import java.io.FileInputStream
+import org.junit.Before
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performScrollToNode
 import android.app.Application
 import android.location.Location
 import android.os.SystemClock
@@ -33,6 +40,15 @@ import org.junit.runner.RunWith
 class NearbyScreenTest {
     @get:Rule val compose = createComposeRule()
 
+    @Before
+    fun grantLocationForTheRealPermissionGate() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val packageName = instrumentation.targetContext.packageName
+        instrumentation.uiAutomation.executeShellCommand(
+            "pm grant $packageName ${Manifest.permission.ACCESS_COARSE_LOCATION}",
+        ).use { descriptor -> FileInputStream(descriptor.fileDescriptor).use { it.readBytes() } }
+    }
+
     private class FakeSource(var failure: String? = null) : NearbySource {
         val radii = mutableListOf<Int>()
         val points = mutableListOf<Pair<Double, Double>>()
@@ -63,7 +79,7 @@ class NearbyScreenTest {
                     viewModelFactory = object : ViewModelProvider.Factory {
                         override fun <T : ViewModel> create(modelClass: Class<T>): T {
                             @Suppress("UNCHECKED_CAST")
-                            return NearbyViewModel(app, source, fixes) as T
+                            return NearbyViewModel(app, source, fixes, cache = null) as T
                         }
                     },
                 )
@@ -80,9 +96,10 @@ class NearbyScreenTest {
         compose.waitUntil(10_000) {
             compose.onAllNodesWithText("2 catatan publik dalam radius 10 km").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("2 catatan publik dalam radius 10 km").assertIsDisplayed()
-        compose.onNodeWithText("Putri malu").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Mimosa pudica").assertIsDisplayed()
+        compose.onNodeWithText("2 catatan publik dalam radius 10 km").performScrollTo().assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Putri malu"))
+        compose.onNodeWithText("Putri malu").assertIsDisplayed()
+        compose.onNodeWithText("Mimosa pudica").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -97,31 +114,31 @@ class NearbyScreenTest {
         compose.waitUntil(10_000) {
             compose.onAllNodesWithText("2 catatan publik dalam radius 25 km").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("2 catatan publik dalam radius 25 km").assertIsDisplayed()
+        compose.onNodeWithText("2 catatan publik dalam radius 25 km").performScrollTo().assertIsDisplayed()
     }
 
     @Test
     fun selectingAMarkerOpensThatSpeciesDetail() {
         val source = FakeSource()
         showScreen(source)
-        compose.waitUntil(10_000) {
-            compose.onAllNodesWithContentDescription("Titik 2: Puring").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(10_000) { source.radii.isNotEmpty() }
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("Titik 2: Puring"))
         compose.onNodeWithContentDescription("Titik 2: Puring").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Tutup detail").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("Tutup detail").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Buka di aplikasi peta").assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Tutup detail"))
+        compose.onNodeWithText("Tutup detail").assertIsDisplayed()
+        compose.onNodeWithText("Buka di aplikasi peta").performScrollTo().assertIsDisplayed()
     }
 
     @Test
     fun aFailedSearchShowsTheMessageAndARecoveryAction() {
         val source = FakeSource(failure = "Data tanaman sekitar tidak valid. Silakan coba lagi.")
         showScreen(source)
-        compose.waitUntil(10_000) {
-            compose.onAllNodesWithText("Pencarian belum berhasil").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(10_000) { source.radii.isNotEmpty() }
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(
+            hasText("Data tanaman sekitar tidak valid. Silakan coba lagi."),
+        )
         compose.onNodeWithText("Data tanaman sekitar tidak valid. Silakan coba lagi.").assertIsDisplayed()
-        compose.onNodeWithText("Coba lagi").assertIsDisplayed()
+        compose.onNodeWithText("Coba lagi").performScrollTo().assertIsDisplayed()
     }
 
     private companion object {
@@ -133,5 +150,24 @@ class NearbyScreenTest {
             radiusKm = radiusKm,
             totalRecords = 2,
         )
+    }
+
+    /**
+     * Jalur produksi: tanpa factory, layar memakai `viewModel()` dan `AndroidViewModelFactory`.
+     * Sebelum perbaikan, test ini tidak perlu assertion apa pun — pembuatan ViewModel langsung
+     * melempar RuntimeException dan seluruh aplikasi berhenti.
+     */
+    @Test
+    fun screenOpensWithTheDefaultViewModelFactory() {
+        val app = InstrumentationRegistry.getInstrumentation()
+            .targetContext.applicationContext as Application
+        // Cache dibersihkan agar tidak ada hasil nyata yang dipakai; lokasi memakai izin nyata.
+        java.io.File(app.filesDir, "nearby-cache").deleteRecursively()
+        compose.setContent {
+            JagaDaunTheme {
+                NearbyScreen(onBack = {})
+            }
+        }
+        compose.onNodeWithText("Tanaman di sekitar").assertIsDisplayed()
     }
 }

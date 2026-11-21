@@ -4,7 +4,7 @@
 
 ## Tujuan
 
-Jaga Daun membantu pengguna mengenali tanaman dari foto, memeriksa dugaan masalah, menyimpan koleksi pribadi, dan mengingat jadwal perawatan. Navigasi bawah menyediakan **Beranda**, **Periksa**, **Foto**, **Kebun**, dan **Lainnya**. **Foto** membuka kamera/galeri; pengingat tersedia dari Beranda dan Lainnya.
+Jaga Daun membantu pengguna mengenali tanaman dari foto, memeriksa dugaan masalah, menyimpan koleksi pribadi, dan mengingat jadwal perawatan. Navigasi bawah menyediakan **Kenali**, **Kebun Saya**, dan **Pengingat**. Kamera/galeri langsung terlihat di Kenali; Periksa Masalah, riwayat, sekitar, dan panduan tetap tersedia sebagai halaman sekunder.
 
 ## Rilis keluarga
 

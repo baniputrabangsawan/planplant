@@ -1,18 +1,40 @@
 package com.jagadaun.app
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Healing
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Eco
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Healing
-import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.SnackbarHost
@@ -29,6 +51,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.jagadaun.app.ui.theme.Primary
+import com.jagadaun.app.ui.theme.SoftAccent
+import com.jagadaun.app.ui.theme.Divider
+import com.jagadaun.app.ui.theme.TextSecondary
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -86,7 +118,10 @@ fun JagaDaunApp(container: AppContainer) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val route = backStackEntry?.destination?.route
-    val tabRoutes = setOf(Routes.KENALI, Routes.HEALTH_HOME, Routes.GARDEN, Routes.MORE)
+    // Hanya empat tujuan utama yang memakai bar. Pengingat dan halaman lain adalah rute
+    // sekunder: punya tombol Kembali sendiri dan tidak menampilkan bar, jadi tidak ada
+    // dua jalur keluar yang bersaing di satu layar.
+    val tabRoutes = remember { setOf(Routes.KENALI, Routes.HEALTH_HOME, Routes.GARDEN, Routes.MORE) }
     val showBottomBar = route in tabRoutes
     var draftPhotos by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val draftPhoto = draftPhotos.firstOrNull()
@@ -115,7 +150,7 @@ fun JagaDaunApp(container: AppContainer) {
         }
         appendNextPhoto = false
         replacePhotos(next)
-        if (route != Routes.PREVIEW) navController.navigate(Routes.PREVIEW)
+        if (route != Routes.PREVIEW) navController.navigateOnce(Routes.PREVIEW)
     }
     LaunchedEffect(photoActions.error) {
         photoActions.error?.let { snackbar.showSnackbar(it) }
@@ -134,7 +169,7 @@ fun JagaDaunApp(container: AppContainer) {
             confirmButton = {
                 TextButton(onClick = {
                     showPhotoMenu = false
-                    navController.navigate(Routes.CAMERA)
+                    navController.navigateOnce(Routes.CAMERA)
                 }) { Text("Ambil Foto") }
             },
             dismissButton = {
@@ -151,38 +186,11 @@ fun JagaDaunApp(container: AppContainer) {
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             if (showBottomBar) {
-                NavigationBar(containerColor = Color.White) {
-                    NavigationBarItem(
-                        selected = route == Routes.KENALI,
-                        onClick = { navController.navigateToTab(Routes.KENALI) },
-                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                        label = { Text("Beranda") },
-                    )
-                    NavigationBarItem(
-                        selected = route == Routes.HEALTH_HOME,
-                        onClick = { navController.navigateToTab(Routes.HEALTH_HOME) },
-                        icon = { Icon(Icons.Filled.Healing, contentDescription = null) },
-                        label = { Text("Periksa") },
-                    )
-                    NavigationBarItem(
-                        selected = false,
-                        onClick = { showPhotoMenu = true },
-                        icon = { Icon(Icons.Filled.CameraAlt, contentDescription = null) },
-                        label = { Text("Foto") },
-                    )
-                    NavigationBarItem(
-                        selected = route == Routes.GARDEN,
-                        onClick = { navController.navigateToTab(Routes.GARDEN) },
-                        icon = { Icon(Icons.Filled.Eco, contentDescription = null) },
-                        label = { Text("Kebun") },
-                    )
-                    NavigationBarItem(
-                        selected = route == Routes.MORE,
-                        onClick = { navController.navigateToTab(Routes.MORE) },
-                        icon = { Icon(Icons.Filled.GridView, contentDescription = null) },
-                        label = { Text("Lainnya") },
-                    )
-                }
+                GardenNavigation(
+                    selectedRoute = route,
+                    onSelect = navController::navigateToTab,
+                    onCamera = { navController.navigateOnce(Routes.CAMERA) },
+                )
             }
         },
     ) { padding ->
@@ -190,33 +198,40 @@ fun JagaDaunApp(container: AppContainer) {
             navController = navController,
             startDestination = Routes.KENALI,
             modifier = Modifier.padding(padding),
+            enterTransition = { fadeIn(tween(120)) },
+            exitTransition = { fadeOut(tween(90)) },
+            popEnterTransition = { fadeIn(tween(120)) },
+            popExitTransition = { fadeOut(tween(90)) },
         ) {
             composable(Routes.KENALI) {
                 IdentifyScreen(
                     container = container,
                     onOpenGarden = { navController.navigateToTab(Routes.GARDEN) },
-                    onOpenReminders = { navController.navigate(Routes.REMINDERS) },
-                    onTakePhoto = { navController.navigate(Routes.CAMERA) },
+                    onOpenReminders = { navController.navigateToTab(Routes.REMINDERS) },
+                    onTakePhoto = { navController.navigateOnce(Routes.CAMERA) },
                     onPickFromGallery = photoActions.pickPhoto,
                     busy = photoActions.busy,
                     onCheckHealth = { navController.navigateToTab(Routes.HEALTH_HOME) },
-                    onOpenHistory = { navController.navigate(Routes.healthHistory(null)) },
-                    onOpenNearby = { navController.navigate(Routes.NEARBY) },
+                    onOpenHistory = { navController.navigateOnce(Routes.healthHistory(null)) },
+                    onOpenTools = { navController.navigateToTab(Routes.MORE) },
+                    onOpenNearby = { navController.navigateOnce(Routes.NEARBY) },
+                    onOpenPlant = { id -> navController.navigateOnce(Routes.plantDetail(id)) },
                 )
             }
             composable(Routes.HEALTH_HOME) {
+                // Tab utama: judul layar sendiri, tanpa tombol Kembali dan tanpa AppBar ganda.
                 HealthHubScreen(
                     container = container,
-                    onCheckHealth = { plantId -> navController.navigate(Routes.health(plantId)) },
-                    onOpenHistory = { navController.navigate(Routes.healthHistory(null)) },
+                    onCheckHealth = { plantId -> navController.navigateOnce(Routes.health(plantId)) },
+                    onOpenHistory = { navController.navigateOnce(Routes.healthHistory(null)) },
                 )
             }
             composable(Routes.MORE) {
                 CareToolsScreen(
-                    onOpenReminders = { navController.navigate(Routes.REMINDERS) },
-                    onOpenHistory = { navController.navigate(Routes.healthHistory(null)) },
+                    onOpenReminders = { navController.navigateOnce(Routes.REMINDERS) },
+                    onOpenHistory = { navController.navigateOnce(Routes.healthHistory(null)) },
                     onCheckHealth = { navController.navigateToTab(Routes.HEALTH_HOME) },
-                    onOpenNearby = { navController.navigate(Routes.NEARBY) },
+                    onOpenNearby = { navController.navigateOnce(Routes.NEARBY) },
                 )
             }
             composable(Routes.NEARBY) {
@@ -225,8 +240,8 @@ fun JagaDaunApp(container: AppContainer) {
             composable(Routes.GARDEN) {
                 GardenScreen(
                     container = container,
-                    onOpenDetail = { id -> navController.navigate(Routes.plantDetail(id)) },
-                    onAddManual = { navController.navigate(Routes.plantForm(null)) },
+                    onOpenDetail = { id -> navController.navigateOnce(Routes.plantDetail(id)) },
+                    onAddManual = { navController.navigateOnce(Routes.plantForm(null)) },
                     onIdentify = { navController.navigateToTab(Routes.KENALI) },
                 )
             }
@@ -235,11 +250,11 @@ fun JagaDaunApp(container: AppContainer) {
                 deepLinks = listOf(navDeepLink { uriPattern = "jagadaun://reminders" }),
             ) {
                 Column(Modifier.fillMaxSize()) {
-                    ScreenTopBar(title = "Perawatan", onBack = { navController.popBackStack() })
+                    ScreenTopBar(title = "Pengingat", onBack = { navController.popBackStack() })
                     RemindersScreen(
                         container = container,
-                        onAdd = { navController.navigate(Routes.reminderForm(null, null)) },
-                        onEdit = { id -> navController.navigate(Routes.reminderForm(id, null)) },
+                        onAdd = { navController.navigateOnce(Routes.reminderForm(null, null)) },
+                        onEdit = { id -> navController.navigateOnce(Routes.reminderForm(id, null)) },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -264,11 +279,13 @@ fun JagaDaunApp(container: AppContainer) {
                             replacePhotos(next)
                             navController.popBackStack()
                             if (navController.currentDestination?.route != Routes.PREVIEW) {
-                                navController.navigate(Routes.PREVIEW)
+                                navController.navigateOnce(Routes.PREVIEW)
                             }
                         }
                     },
                     allowRotation = navController.previousBackStackEntry?.destination?.route != Routes.PLANT_FORM,
+                    // Galeri dari kamera kembali ke layar hasil, bukan menumpuk kamera di belakangnya.
+                    onPickFromGallery = { navController.popBackStack(); photoActions.pickPhoto() },
                 )
             }
             composable(Routes.PREVIEW) {
@@ -284,6 +301,7 @@ fun JagaDaunApp(container: AppContainer) {
                         candidateName = null
                         candidateScientificName = null
                         navController.navigate(Routes.plantForm(null)) {
+                            launchSingleTop = true
                             popUpTo(Routes.PREVIEW) { inclusive = true }
                         }
                     },
@@ -292,6 +310,7 @@ fun JagaDaunApp(container: AppContainer) {
                         candidateName = candidate.displayName
                         candidateScientificName = candidate.scientificName
                         navController.navigate(Routes.plantForm(null)) {
+                            launchSingleTop = true
                             popUpTo(Routes.PREVIEW) { inclusive = true }
                         }
                     },
@@ -306,9 +325,10 @@ fun JagaDaunApp(container: AppContainer) {
                     container = container,
                     plantId = id,
                     onBack = { navController.popBackStack() },
-                    onEdit = { navController.navigate(Routes.plantForm(id)) },
-                    onAddReminder = { navController.navigate(Routes.reminderForm(null, id)) },
-                    onCheckHealth = { navController.navigate(Routes.health(id)) },
+                    onEdit = { navController.navigateOnce(Routes.plantForm(id)) },
+                    onAddReminder = { navController.navigateOnce(Routes.reminderForm(null, id)) },
+                    onEditReminder = { reminderId -> navController.navigateOnce(Routes.reminderForm(reminderId, id)) },
+                    onCheckHealth = { navController.navigateOnce(Routes.health(id)) },
                 )
             }
             composable(
@@ -321,11 +341,11 @@ fun JagaDaunApp(container: AppContainer) {
                     container = container,
                     plantId = entry.arguments?.getString("plantId")?.takeIf { it != "none" },
                     cameraPhotos = cameraPhotos,
-                    onTakePhoto = { navController.navigate(Routes.CAMERA) },
+                    onTakePhoto = { navController.navigateOnce(Routes.CAMERA) },
                     onCameraPhotosConsumed = { entry.savedStateHandle["cameraPhotos"] = emptyList<String>() },
                     onBack = { navController.popBackStack() },
                     onOpenHistory = {
-                        navController.navigate(Routes.healthHistory(entry.arguments?.getString("plantId")?.takeIf { it != "none" }))
+                        navController.navigateOnce(Routes.healthHistory(entry.arguments?.getString("plantId")?.takeIf { it != "none" }))
                     },
                 )
             }
@@ -353,13 +373,20 @@ fun JagaDaunApp(container: AppContainer) {
                     initialName = candidateName.takeIf { id == null },
                     initialScientificName = candidateScientificName.takeIf { id == null },
                     cameraPhotos = cameraPhotos,
-                    onTakePhoto = { navController.navigate(Routes.CAMERA) },
+                    onTakePhoto = { navController.navigateOnce(Routes.CAMERA) },
                     onCameraPhotosConsumed = { entry.savedStateHandle["cameraPhotos"] = emptyList<String>() },
                     onDone = {
                         draftPhotos = emptyList()
                         candidateName = null
                         candidateScientificName = null
-                        navController.navigateToTab(Routes.GARDEN)
+                        if (!navController.popBackStack(Routes.GARDEN, inclusive = false)) {
+                            navController.navigate(Routes.GARDEN) {
+                                popUpTo(navController.graph.findStartDestination().id)
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                        photoScope.launch { snackbar.showSnackbar("Tanaman tersimpan di Kebun Saya.") }
                     },
                     onBack = {
                         draftPhotos = emptyList()
@@ -391,8 +418,88 @@ fun JagaDaunApp(container: AppContainer) {
 }
 
 private fun androidx.navigation.NavHostController.navigateToTab(route: String) {
+    if (currentDestination?.route == route) return
     navigate(route) {
-        popUpTo(graph.findStartDestination().id)
+        popUpTo(graph.findStartDestination().id) { saveState = true }
         launchSingleTop = true
+        restoreState = true
+    }
+}
+
+private fun androidx.navigation.NavHostController.navigateOnce(route: String) {
+    navigate(route) { launchSingleTop = true }
+}
+
+/**
+ * Empat tujuan tab dengan tombol kamera menonjol di tengah, meniru navigasi PictureThis:
+ * kamera langsung membuka kamera; galeri ditawarkan di dalam layar kamera.
+ *
+ * Tinggi dipatok eksplisit karena `bottomBar` diukur dengan batas tinggi tak terhingga:
+ * `Box` + `weight` di sana membuat label tab melayang di tengah layar.
+ */
+@Composable
+private fun GardenNavigation(
+    selectedRoute: String?,
+    onSelect: (String) -> Unit,
+    onCamera: () -> Unit,
+) {
+    val barHeight = 66.dp
+    val cameraSize = 60.dp
+    val cameraLift = 26.dp
+    // Inset navigasi sistem dipasang di luar tinggi bar, supaya label tidak terhimpit.
+    Box(Modifier.fillMaxWidth().navigationBarsPadding().height(barHeight + cameraLift)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().height(barHeight).align(Alignment.BottomCenter),
+            color = Color.White,
+            shadowElevation = 8.dp,
+        ) {
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = 4.dp).selectableGroup(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NavigationSlot(Routes.KENALI, "Beranda", Icons.Filled.Home, selectedRoute, onSelect)
+                NavigationSlot(Routes.HEALTH_HOME, "Periksa", Icons.Filled.Healing, selectedRoute, onSelect)
+                // Ruang kosong tepat di bawah tombol kamera.
+                Spacer(Modifier.weight(1f))
+                NavigationSlot(Routes.GARDEN, "Kebun", Icons.Filled.Eco, selectedRoute, onSelect)
+                NavigationSlot(Routes.MORE, "Lainnya", Icons.Filled.GridView, selectedRoute, onSelect)
+            }
+        }
+        FloatingActionButton(
+            onClick = onCamera,
+            modifier = Modifier.align(Alignment.TopCenter).size(cameraSize),
+            shape = CircleShape,
+            containerColor = Primary,
+            contentColor = Color.White,
+            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+        ) {
+            Icon(Icons.Filled.CameraAlt, contentDescription = "Ambil foto tanaman",
+                modifier = Modifier.size(28.dp))
+        }
+    }
+}
+
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.NavigationSlot(
+    destination: String,
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selectedRoute: String?,
+    onSelect: (String) -> Unit,
+) {
+    val selected = selectedRoute == destination
+    Column(
+        modifier = Modifier.weight(1f).fillMaxHeight()
+            .clip(RoundedCornerShape(16.dp))
+            .selectable(selected, role = Role.Tab, onClick = { onSelect(destination) })
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = null,
+            tint = if (selected) Primary else TextSecondary, modifier = Modifier.size(24.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium,
+            color = if (selected) Primary else TextSecondary,
+            maxLines = 1, textAlign = TextAlign.Center)
     }
 }

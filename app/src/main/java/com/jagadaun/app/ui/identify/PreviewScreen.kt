@@ -1,6 +1,17 @@
 package com.jagadaun.app.ui.identify
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.ui.semantics.selected
+import com.jagadaun.app.ui.theme.Primary
+import com.jagadaun.app.ui.theme.SoftAccent
+import com.jagadaun.app.ui.theme.Outline
+import com.jagadaun.app.ui.theme.Surface
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -94,24 +105,14 @@ fun PreviewScreen(
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
         ) {
-            PlantPhoto(
-                modifier = Modifier.fillMaxWidth().height(if (hasOutcome) 112.dp else 260.dp),
-                iconSize = 72.dp,
-                photoRef = state.photoRef,
-                contentDescription = "Foto tanaman yang dipilih",
-            )
-            if (state.photoRefs.size > 1) {
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    state.photoRefs.forEachIndexed { index, ref ->
-                        if (index > 0) {
-                            PlantPhoto(
-                                photoRef = ref,
-                                modifier = Modifier.weight(1f).height(if (hasOutcome) 56.dp else 120.dp),
-                                contentDescription = "Foto tanaman ${index + 1}",
-                            )
-                        }
-                    }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(state.photoRefs, key = { it }) { ref ->
+                    PlantPhoto(
+                        modifier = Modifier.width(248.dp).height(if (hasOutcome) 144.dp else 248.dp),
+                        iconSize = 64.dp,
+                        photoRef = ref,
+                        contentDescription = "Foto tanaman yang dipilih",
+                    )
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -186,6 +187,32 @@ fun PreviewScreen(
                             color = TextSecondary,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                         )
+                    }
+                }
+                val choices = remember(result) { result.candidates.filter { it.score >= MIN_NAMEABLE_SCORE } }
+                if (choices.size > 1) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Pilih nama yang paling sesuai.", style = MaterialTheme.typography.bodyLarge)
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(choices, key = { it.scientificName }) { choice ->
+                            val chosen = choice == candidate
+                            Card(
+                                onClick = { identification.selectCandidate(choice) },
+                                enabled = !processing,
+                                modifier = Modifier.width(248.dp).semantics { selected = chosen },
+                                shape = RoundedCornerShape(20.dp),
+                                colors = CardDefaults.cardColors(containerColor = if (chosen) SoftAccent else Surface),
+                                border = BorderStroke(if (chosen) 2.dp else 1.dp, if (chosen) Primary else Outline),
+                            ) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(choice.displayName, style = MaterialTheme.typography.titleMedium)
+                                    Text(choice.scientificName, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                                    Text(if (chosen) "Dipilih" else "Pilih kandidat", color = Primary,
+                                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                                }
+                            }
+                        }
                     }
                 }
                 Spacer(Modifier.height(16.dp))

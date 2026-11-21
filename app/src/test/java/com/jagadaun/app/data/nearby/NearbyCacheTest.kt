@@ -31,6 +31,41 @@ class NearbyCacheTest {
     }
 
     @Test
+    fun `latest result survives for the home screen and is validated on read`() {
+        cache.writeLatest(sample())
+        val restored = cache.readLatest()
+        assertEquals(10, restored?.radiusKm)
+        assertEquals(sample().species.map { it.scientificName }, restored?.species?.map { it.scientificName })
+        assertEquals("Putri malu", restored?.species?.first()?.commonName)
+    }
+
+    @Test
+    fun `a corrupt latest file degrades to a miss instead of rendering bad data`() {
+        directory.mkdirs()
+        File(directory, "latest.json").writeText("{not json", Charsets.UTF_8)
+        assertNull(cache.readLatest())
+        assertTrue("corrupt cache must be deleted", !File(directory, "latest.json").exists())
+    }
+
+    @Test
+    fun `latest file with an unsupported radius is rejected`() {
+        directory.mkdirs()
+        File(directory, "latest.json").writeText(
+            JSONObject().put("species", org.json.JSONArray())
+                .put("radiusKm", 999).put("totalRecords", 0).toString(),
+            Charsets.UTF_8,
+        )
+        assertNull(cache.readLatest())
+    }
+
+    @Test
+    fun `writing a new day keeps the latest file for the home screen`() {
+        cache.writeLatest(sample())
+        cache.write(-6.2, 106.816, 10, sample(), day = "2026-11-22")
+        assertTrue("latest.json must survive day pruning", File(directory, "latest.json").isFile)
+    }
+
+    @Test
     fun `a written result reads back identically`() {
         cache.write(-6.2, 106.816, 10, sample(), day = "2026-11-21")
         val restored = cache.read(-6.2, 106.816, 10, day = "2026-11-21")

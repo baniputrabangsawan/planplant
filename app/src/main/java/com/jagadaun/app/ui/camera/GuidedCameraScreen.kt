@@ -48,6 +48,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -121,6 +122,8 @@ fun GuidedCameraScreen(
     onBack: () -> Unit,
     onCaptured: (List<String>) -> Unit,
     allowRotation: Boolean = true,
+    /** Galeri hanya ditawarkan di dalam kamera, bukan sebagai dialog sumber foto. */
+    onPickFromGallery: (() -> Unit)? = null,
 ) {
     val factory = remember(photos, allowRotation) {
         viewModelFactory {
@@ -196,6 +199,12 @@ fun GuidedCameraScreen(
                         }
                     }) { Text("Buka pengaturan", color = CameraAccent) }
                     permissionError?.let { Text(it, textAlign = TextAlign.Center) }
+                    if (onPickFromGallery != null) {
+                        TextButton(onClick = onPickFromGallery) {
+                            Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("Pilih dari Galeri", Modifier.padding(start = 8.dp), color = CameraAccent)
+                        }
+                    }
                     TextButton(onClick = cancel) { Text("Kembali", color = Color.White) }
                 }
             } else {
@@ -233,6 +242,7 @@ fun GuidedCameraScreen(
                                     model.capture(it, mainExecutor, view.display?.rotation ?: Surface.ROTATION_0)
                                 }
                             },
+                            onPickFromGallery = onPickFromGallery,
                         )
                     }
                     if (landscape) {
@@ -290,6 +300,7 @@ private fun CaptureControls(
     onNext: () -> Unit,
     onAccept: () -> Unit,
     onCapture: () -> Unit,
+    onPickFromGallery: (() -> Unit)?,
 ) {
     if (state.surround) {
         Text("${state.captured}/$MAX_CAPTURE_VIEWS foto · tanaman yang sama. Satu foto sudah cukup.",
@@ -336,10 +347,19 @@ private fun CaptureControls(
             }
         }
     } else {
-        Button(onClick = onCapture, enabled = ready, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(22.dp))
-            Text(if (state.surround) "Ambil foto ${state.selected + 1}" else "Ambil foto",
-                modifier = Modifier.padding(start = 8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = onCapture, enabled = ready, modifier = Modifier.weight(1f).height(52.dp)) {
+                Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(22.dp))
+                Text(if (state.surround) "Ambil foto ${state.selected + 1}" else "Ambil foto",
+                    modifier = Modifier.padding(start = 8.dp))
+            }
+            if (onPickFromGallery != null) {
+                OutlinedButton(onClick = onPickFromGallery, modifier = Modifier.height(52.dp)) {
+                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Text("Galeri", Modifier.padding(start = 6.dp), color = CameraAccent)
+                }
+            }
         }
         if (state.refs[state.selected].isNotEmpty()) {
             TextButton(onClick = { onSelect(state.selected) }, modifier = Modifier.fillMaxWidth()) {

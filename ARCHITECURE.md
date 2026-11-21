@@ -142,3 +142,77 @@ Inspeksi ulang APK `cn.danatech.xingseus` 5.40.0 (`sha256 2d114389…0f490`) mem
 - **Lokasi manual**: `withManualCoordinates` menolak lintang/bujur di luar batas sebelum menyentuh jaringan, cache, atau proyeksi peta; dialog memakai input desimal dan menampilkan pesan batas. Berguna saat GPS mati — kasus yang sama yang ditangani `ChooseALocationBottomSheetDialogFragment` PictureThis.
 - **Galat bertipe** (`NearbyErrorKind`): lokasi nonaktif, lokasi tidak tersedia, izin, jaringan, penyedia, cache-miss. Tiap jenis mendapat judul, nasihat, dan aksi pemulihan sendiri, menggantikan satu pesan generik; analog dari `MapErrorTypeBottomSheetDialogFragment`.
 - Verifikasi: `testDebugUnitTest lintDebug assembleDebug` lulus dengan **5 tes cache** (round-trip, hari/radius berbeda, pembulatan kunci, data dirusak, clear) dan **2 tes transisi** (batas koordinat manual, label cache). Tes UI perangkat tetap diantrekan karena emulator dimatikan proses luar di host bersama.
+
+## Redesign Greg/Lovi + navigasi Play — 21 November 2026
+
+Pilihan referensi disetujui pengguna sebelum implementasi/build; tautan dan pemetaan komponen ada di [DESIGN.md](DESIGN.md). Tiga tab akar: Kenali, Kebun Saya, Pengingat. Periksa Masalah, riwayat, sekitar, dan Panduan & alat tetap tersedia sebagai rute sekunder dengan tombol kembali. Kamera/formulir tanpa bottom bar.
+
+- `navigateToTab` memakai `saveState`/`restoreState` dan `launchSingleTop`; tab aktif menjadi no-op. Push sekunder memakai single-top. Simpan tanaman membuang formulir, bukan menyimpannya sebagai tujuan yang dipulihkan.
+- Kenali memakai `LazyColumn`, hanya empat tanaman terbaru dan dua pengingat; tidak lagi membuka observer seluruh riwayat hanya untuk ringkasan. Kebun memakai grid adaptif dan deret terbaru, state gulir/pencarian disimpan. Peta pengingat per tanaman dihitung sekali per perubahan data, bukan scan semua pengingat di setiap kartu.
+- Detail memakai daftar lazy, jadwal nyata, bagian panduan/catatan, serta foto koleksi dan pemeriksaan terkait yang dideduplikasi. Foto tambahan tidak dibuat atau disalin hanya untuk galeri.
+- `PlantPhoto` memakai satu ImageLoader Coil aplikasi. `PlantPhotoFetcher` meminta sumber melalui `PhotoStore.displayFile`: path, ukuran berkas, dan dimensi tetap diperiksa di IO. Decoder Coil menangani ukuran/aspect ratio/EXIF dan cache memori lintas layar; tidak ada cache disk tambahan untuk foto privat. Uji nyata menemukan bitmap hasil sampling awal terlalu kecil sehingga cache ditolak; fetcher tidak lagi menyuplai bitmap undersized.
+- Aksi pengingat kini menunggu hasil repository. Penyelesaian tetap CAS pada `expectedDue`; jeda mengubah baris terbaru agar tidak mengembalikan jadwal lama. UI baru mengumumkan sukses sesudah transaksi, mengunci tindakan yang sedang berjalan, dan memberi tindakan coba lagi pada kegagalan.
+- Kandidat yang memenuhi ambang 0,30 dapat dipilih di deret horizontal tanpa membuang hasil kondisi, catatan, atau foto. Pilihan dari luar hasil/di bawah ambang/saat menyimpan ditolak.
+- Transisi halaman 120/90 ms, perubahan kapsul 100 ms, mengikuti skala animasi sistem. Tidak ada carousel otomatis. Teks membungkus, target 48 dp, palet dan DM Sans dipertahankan.
+
+Gate `./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest` lulus: 56 tes JVM, 0 error lint, kedua APK dibuat.
+
+Verifikasi runtime pada AVD khusus `jagadaun-redesign` (API 35, 720×1600, density 320, 2 vCPU, guest RAM 1536 MiB, SwiftShader, AVD di `/dev/shm` karena disk host tinggal 1,5 GB), 24 tanaman dan 24 pengingat **fixture buatan sendiri**, bukan data keluarga:
+
+- `am instrument` manual: **30/30 tes perangkat lulus**, termasuk Room/pengingat, konfinasi dan cache foto, telaah Nearby (4 tes yang semula belum pernah berjalan).
+- Alur UI nyata lulus: pemulihan gulir grid setelah pindah tab dan setelah detail→kembali; empat ketukan pada tab aktif tidak menumpuk tujuan (satu Back kembali ke Kenali); pencarian tanpa hasil dan pemulihannya; simpan tanaman manual kembali ke koleksi; hapus tanaman QA; **font 200%** dengan navigasi tetap terbaca; pengurangan animasi sistem.
+- Cacat yang ditemukan dan diperbaiki lewat pengujian ini: FAB "Tambah manual" dan "Tambah Pengingat" dapat diketuk tetapi tidak terpublikasi ke pohon aksesibilitas, sehingga TalkBack tidak mengumumkan nama; kini keduanya memakai `contentDescription` eksplisit. Gelembung peta diperbesar ke 48 dp, dan pesan galat Nearby yang tampil dua kali dihilangkan.
+- Tes perangkat memakai database Room in-memory terpisah atau UUID; tidak memakai `connectedDebugAndroidTest` dan tidak mengubah data keluarga.
+
+**Pengukuran performa tidak konklusif dan tidak diklaim sebagai perbaikan.** Harness (`/tmp/jagadaun-redesign-proof/measure.py`) menjalankan urutan tindakan identik pada APK lama dan baru, dataset dan gesture yang sama, lalu membaca `dumpsys gfxinfo framestats`. Hasilnya tidak stabil: emulator mati di tengah dua run, dan run ulang memberi tab p95 382 ms vs 233 ms untuk skenario yang sama. Angka `FrameCompleted−IntendedVsync` juga bukan input-to-photon. Yang dapat dikatakan: (1) tab aktif sebelumnya tetap memicu frame karena setiap ketukan menavigasi ulang, sedangkan sekarang menjadi no-op; (2) foto tidak lagi didekode ulang dari disk pada setiap komposisi, dibuktikan tes cache memori, bukan oleh angka frame; (3) gulir grid kartu besar lebih berat daripada daftar thumbnail lama pada renderer software ini. Benchmark yang sah memerlukan perangkat fisik kelas pengguna atau emulator dengan GPU nyata, beberapa run, dan metrik `FrameTimeline`/Macrobenchmark.
+
+### Navigasi lima tujuan (revisi pengguna)
+
+Pengguna meminta navigasi menyerupai PictureThis: tombol kamera menonjol di tengah. Implementasi sekarang **Beranda · Periksa · kamera · Kebun · Lainnya**; tombol kamera 60 dp berwarna `Primary` mengapung 26 dp di atas permukaan putih 66 dp dan langsung membuka `Routes.CAMERA`. Galeri dipindah ke dalam layar kamera (`onPickFromGallery`, muncul di samping tombol rana dan di keadaan izin ditolak); layar Kenali hanya menampilkan "Galeri tersedia di dalam kamera".
+
+`Scaffold.bottomBar` diukur dengan batas tinggi tak terhingga, jadi `Box` + `weight` di sana membuat label tab melayang di tengah layar; tinggi bar kini dipatok eksplisit dan `navigationBarsPadding()` dipasang di luar tinggi tersebut agar label tidak terhimpit. Verifikasi di AVD: label tab menempati 60 px penuh, lingkaran kamera 56 px dengan 24 px menonjol, ketukan kamera memunculkan layar kamera (bukan dialog sumber foto) dan menampilkan tombol **Galeri**. Gate `testDebugUnitTest lintDebug assembleDebug` lulus.
+
+## Tanaman di sekitar — kartu instan, peta wilayah, dan bug Coil — 21 November 2026
+
+Permintaan pengguna: nama dan foto tanaman harus langsung terlihat tanpa diketuk, peta harus menyorot wilayah (bukan radar), dan seluruh jalur harus ditelaah.
+
+- **Kartu instan.** `NearbySpeciesGridCard` menampilkan thumbnail 96 dp + nama Indonesia + nama ilmiah + jumlah catatan sekaligus. Kredit foto, deskripsi, dan tautan pindah ke keadaan terbuka, sehingga daftar tidak lagi didominasi satu foto 4:3 per tanaman. Terverifikasi di HP: lima kartu berturut-turut menampilkan `Foto <nama>` dan namanya tanpa interaksi.
+- **Peta wilayah, bukan radar.** Cincin ganda diganti satu area berisi `primary` 15% dengan batas tegas, plus nama tanaman pada setiap titik (bukan hanya nomor). Bukti REA PictureThis: `createPolygonPath` dan `PlantDistributionView`/`PlantDistributionMapFragment` merender wilayah administratif, bukan cincin jarak; tidak ada SDK peta native. Klaim "asli/endemik" tetap tidak diambil karena GBIF tidak menyediakannya.
+- **Bug Coil (penyebab foto tidak pernah tampil).** `JagaDaunApplication` menambahkan fetcher foto privat lewat `components { }`, yang **mengganti** registry bawaan Coil. Akibatnya tidak ada fetcher jaringan, sehingga thumbnail `https://` gagal tanpa error terlihat. Perbaikan: `ComponentRegistry().newBuilder()` (menyalin default) + komponen lokal, lalu `ImageLoader.Builder.components(registry)`. Komposisi registry dipindah ke `plantImageComponents()` agar bisa diuji tanpa database.
+- **Nama Indonesia lebih lengkap.** Verifikasi Wikipedia diperluas: tahap 1 tetap intro harus memuat nama ilmiah penuh; tahap 2 menerima genus dengan toleransi jarak edit 1 (mis. "Altenanthera") **hanya bila** epitet spesies muncul utuh atau deskripsi menyatakan taksa, dan judul tidak sekadar nama genus. Judul genus seperti "Pyrrosia" ditolak.
+- Verifikasi: `testDebugUnitTest lintDebug assembleDebug` lulus (**58 tes JVM**, 0 error lint). Tes baru `ImageLoaderFactoryTest` gagal bila fetcher jaringan hilang — dibuktikan merah sebelum perbaikan registry. Worker: 55 tes, 54 lulus; satu kegagalan (`health upload bounds ... ReadableStream already closed`) **sudah ada di HEAD**, bukan akibat perubahan ini, dan typecheck bersih.
+- Data live: 12/12 spesies membawa foto berlisensi CC; nama Indonesia 9/12 (radius 10 km). Tidak ada URL foto yang gagal (12/12 HTTP 200).
+- **Deploy ulang berhasil** (`modified_on 2026-11-21T13:08:44Z`). Cakupan nama Indonesia setelah deploy: radius 5 km 9/12, 10 km 10/12, 25 km **12/12**; foto 12/12 pada ketiga radius. `Alternanthera sessilis` sekarang bernama "Kremah". Sisa yang kosong bukan cacat: `Neptunia prostrata` dan `Davallia denticulata` tidak punya artikel di Wikipedia Indonesia, dan "Pyrrosia" hanya artikel genus sehingga sengaja ditolak.
+- **Tes Worker yang gagal: diperbaiki.** Penyebabnya `cancelBody()`: memanggil `body.cancel()` pada body `FormData` yang belum dibaca membuat pump internal undici menulis ke stream yang sudah ditutup dan melempar `ERR_INVALID_STATE` sebagai unhandled rejection. `cancelBody` kini menghabiskan body lebih dulu (`new Response(body).arrayBuffer()`) lalu membatalkannya, dengan semua kegagalan ditelan karena respons sudah membawa kode galat yang benar. Worker: **55/55 tes lulus**, typecheck bersih, bundle 29,1 kb.
+
+
+## Tanaman di sekitar langsung di Beranda — 21 November 2026
+
+Permintaan pengguna: nama, foto, dan nama ilmiah harus langsung terlihat, berbentuk **horizontal**, tanpa membuka fitur dan tanpa menekan tombol.
+
+- `NearbySection` di Beranda membaca hasil terakhir dari `NearbyCache.readLatest()` saat komposisi pertama, lalu menampilkannya sebagai `LazyRow` kartu 168 dp: foto 126 dp di atas, nama Indonesia (maks 2 baris) dan nama ilmiah (maks 1 baris) di bawah. Nama ilmiah tidak pernah disembunyikan.
+- Bila cache belum ada tetapi izin lokasi sudah diberikan, seksi ini mencari sendiri lewat `NearbyClient.nearbyDefault()`. Bila izin belum ada, seksi tetap menampilkan hasil cache dan tidak pernah memunculkan dialog izin dari Beranda.
+- `NearbyCache.writeLatest()` menyimpan envelope yang sama dengan jaringan dan diperiksa ulang oleh parser yang sama; `latest.json` dikecualikan dari pemangkasan hari/radius. Tanpa itu, Beranda akan kosong setelah membersihkan cache lama.
+- Izin dan logika lokasi dipindah ke `ui/nearby/LocationFixes.kt` supaya Beranda dan layar sekitar memakai satu sumber; tidak ada riwayat lokasi yang disimpan.
+- `IdentifyScreen` tidak lagi memakai kartu tautan "Tanaman di sekitar"; seksi langsung menggantikannya, dengan tombol "Peta & detail" ke layar penuh.
+- Verifikasi di HP: aplikasi dibuka tanpa interaksi, Beranda menampilkan "303 catatan publik dalam radius 10 km", kartu "Daun berlangkas / Polyscias fruticosa" dan "Putri malu / Mimosa pudica" dengan foto (71% area kartu adalah piksel foto, 257 warna unik). Dengan WiFi dan data **dimatikan**, deret tetap tampil dari cache.
+- Gate: **62 tes JVM** (4 tes baru untuk `latest.json`: round-trip, berkas rusak dihapus, radius tak didukung ditolak, `latest.json` bertahan saat pemangkasan), 0 error lint, `assembleDebug` sukses.
+
+
+### Koreksi kartu: tinggi seragam dan judul nama Indonesia — 21 November 2026
+
+Pengguna melaporkan dua cacat pada deret Beranda, keduanya nyata:
+
+- **Tinggi kartu tidak seragam.** Judul boleh 2 baris (`maxLines = 2`), sehingga kartu berjudul pendek lebih pendek daripada yang panjang; tinggi `LazyRow` ikut berubah. Sekarang `CARD_WIDTH` 168 dp, `CARD_PHOTO_HEIGHT` 126 dp, `CARD_TEXT_HEIGHT` 76 dp, dan `CARD_HEIGHT = 202 dp` dipasang pada `Card`, tiap area foto, area teks, dan `LazyRow`. Judul dipangkas ke satu baris. Terukur di HP: semua foto y1131–1462 (h=331) dan semua teks y1483–1581 — identik antar kartu.
+- **Nama ilmiah dipakai sebagai judul.** `commonName ?: scientificName` membuat `Chaetomorpha linum` dan `Crotalaria retusa` tampil seolah nama Indonesia. Sekarang judul SELALU `commonName`; bila kosong tampil "Tanaman ini" dengan warna sekunder, nama ilmiah tetap di baris miringnya sendiri. Berlaku di kartu Beranda, kartu layar sekitar, dan callout peta.
+- Catatan penjelas ganda ("Nama Indonesia belum tersedia") dihapus setelah terlihat dua kali pada satu kartu.
+- Gate: **62 tes JVM**, 0 error lint, `assembleDebug` sukses; diverifikasi ulang di HP setelah pemasangan.
+
+
+### Urutan Beranda dan kelengkapan gambar — 21 November 2026
+
+- **Urutan ditukar** sesuai permintaan: Tanaman Anda (koleksi) kini di atas, Tanaman di sekitar di bawahnya, lalu Perawatan dan tautan lain. Terukur di HP: `Tanaman Anda` y1221, `Tanaman di sekitar` menyusul di bawahnya.
+- **Semua kartu wajib bergambar.** Parser `NearbyClient.parse` kini menyaring spesies tanpa foto berlisensi CC (`photo == null`), bukan menampilkan ubin kosong. Filter sengaja diletakkan di parser agar cache lama ikut bersih tanpa menunggu kedaluwarsa. Konsekuensi yang harus disampaikan: bila sumber tidak punya foto berlisensi untuk suatu spesies, spesies itu tidak muncul sama sekali — daftar bisa lebih pendek dari 12.
+- **Cacat render yang ditemukan.** `AsyncImage` memakai `Modifier.fillMaxWidth()` di dalam `LazyRow` yang lebarnya sedang diukur; kartu yang belum terpasang saat pengukuran bisa mendapat lebar nol sehingga gambarnya tidak tergambar meski URL valid. Ukuran foto kini tetap (`width(CARD_WIDTH).height(CARD_PHOTO_HEIGHT)`).
+- Verifikasi di HP: 8 kartu unik dengan foto (Nol card "Foto tidak tersedia"), tiap area gambar diukur dari piksel tangkapan layar — gradient 7,3–20,5, ambang kosong 2,0, jadi **0 dari 8 kartu kosong**. Urutan seksi dan tinggi kartu seragam juga terukur dari pohon UI.
+- Gate: **62 tes JVM**, 0 error lint, `assembleDebug` sukses.

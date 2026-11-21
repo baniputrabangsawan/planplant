@@ -67,6 +67,12 @@ internal data class IdentificationUiState(
         savedFromPhotoRefs = photoRefs,
         savedHealthRecord = record,
     )
+
+    /** Pilihan hanya boleh berasal dari hasil yang cukup kuat; foto/kondisi tetap dipertahankan. */
+    fun withCandidate(candidate: PlantCandidate): IdentificationUiState =
+        if (loading || savingHealth || candidate.score < MIN_NAMEABLE_SCORE ||
+            result?.candidates?.contains(candidate) != true
+        ) this else copy(selectedCandidate = candidate)
 }
 
 internal class IdentificationViewModel(
@@ -117,6 +123,10 @@ internal class IdentificationViewModel(
                 }
             }
         }
+    }
+
+    fun selectCandidate(candidate: PlantCandidate) {
+        mutableState.value = mutableState.value.withCandidate(candidate)
     }
 
     fun setHealthNotes(notes: String) {

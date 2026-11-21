@@ -138,7 +138,11 @@ class PhotoStore(context: Context) {
         }
     }
 
-    private fun decode(file: File, maxSize: Int): Bitmap {
+    /** Sumber tampilan tetap terkonfinasi dan diperiksa sebelum decoder Coil membukanya. */
+    internal fun displayFile(path: String): File =
+        confinedFile(path, drafts, saved, captures).also { readBounds(it) }
+
+    private fun readBounds(file: File): BitmapFactory.Options {
         if (!file.isFile || file.length() !in 1..MAX_IMPORT_BYTES) {
             throw IOException("Photo is missing, empty, or too large")
         }
@@ -151,6 +155,13 @@ class PhotoStore(context: Context) {
         ) {
             throw IOException("Photo dimensions are invalid or too large")
         }
+        return bounds
+    }
+
+    private fun decode(file: File, maxSize: Int): Bitmap {
+        val bounds = readBounds(file)
+        val width = bounds.outWidth
+        val height = bounds.outHeight
         var sample = 1
         while ((width.toLong() + sample - 1) / sample > maxSize ||
             (height.toLong() + sample - 1) / sample > maxSize

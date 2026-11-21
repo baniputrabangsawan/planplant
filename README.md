@@ -23,6 +23,10 @@ Aplikasi **tidak pernah** menyimpan API key penyedia. Semua panggilan ke Pl@ntNe
 | **Tanaman di sekitar** | Spesies yang tercatat di GBIF dalam radius 5/10/25 km, lengkap dengan foto berlisensi CC + kredit, nama Indonesia dari Wikipedia, dan peta skematis interaktif. |
 | **Panduan tanaman** | Bacaan lokal untuk Pepaya dan Mangga (varietas, ciri buah, tautan sumber). |
 
+## Navigasi
+
+Lima tujuan bawah meniru PictureThis: **Beranda · Periksa · kamera · Kebun · Lainnya**. Tombol kamera di tengah menonjol dengan warna hijau tua sendiri dan **langsung membuka kamera**; galeri ditawarkan di dalam layar kamera, bukan lewat dialog sumber foto. Tab lain tetap berupa label ikon dengan kapsul aktif. Riwayat, tanaman sekitar, dan panduan tetap tersedia sebagai halaman sekunder.
+
 ## Arsitektur
 
 ```mermaid
@@ -164,12 +168,12 @@ Hanya `request_id` acak, tanggal UTC, dan hash UUID perangkat (7 hari). Tidak ad
 
 | Suite | Perintah | Jumlah | Cakupan |
 | --- | --- | --- | --- |
-| JVM unit | `./gradlew testDebugUnitTest` | 54 tes | Parser protokol, ambang, penjadwalan, transisi state UI, cache nearby, label lisensi |
+| JVM unit | `./gradlew testDebugUnitTest` | 56 tes | Parser protokol, ambang, pilihan kandidat, penjadwalan, transisi UI, cache nearby, label lisensi |
 | Lint | `./gradlew lintDebug` | — | Wajib 0 error |
 | Worker | `cd worker && npm test` | 54 tes | Route, auth, kuota pada SQLite in-memory nyata, batas unggahan, adapter dengan `fetch` tiruan |
-| Perangkat | lihat di bawah | 26 tes | Room, migrasi `1 → 2`, promosi/rollback foto, protokol, UI nearby |
+| Perangkat | lihat di bawah | 30 tes | Room, migrasi `1 → 2`, promosi/rollback foto, cache gambar terkonfinasi, protokol, UI nearby |
 
-Status terakhir yang terverifikasi: `testDebugUnitTest lintDebug assembleDebug` → **BUILD SUCCESSFUL**, 54 tes unit lulus, 0 error lint.
+Gate redesign `testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest` lulus: **56 tes unit**, 0 error lint, APK aplikasi dan APK tes berhasil dibuat. Pengujian runtime dicatat terpisah di [ARCHITECURE.md](ARCHITECURE.md); build sukses tidak membuktikan kelancaran di perangkat.
 
 ### Tes perangkat tanpa menghapus data keluarga
 
@@ -217,8 +221,8 @@ app/
     reminders/               Room → WorkManager sync
     ui/                      layar per fitur (identify, garden, health, reminders,
                              camera, nearby, home, components, theme)
-  src/test/                  54 tes JVM
-  src/androidTest/           26 tes perangkat
+  src/test/                  56 tes JVM
+  src/androidTest/           30 tes perangkat
   schemas/                   ekspor skema Room (v1, v2) — ikut di-commit
 worker/
   src/worker.ts              seluruh Worker: rute, auth, kuota, adapter

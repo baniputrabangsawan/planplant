@@ -315,12 +315,14 @@ fun NearbyScreen(
                         item {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    "Peta skema",
+                                    "Peta wilayah",
                                     style = MaterialTheme.typography.titleLarge,
                                     modifier = Modifier.semantics { heading() },
                                 )
                                 Text(
-                                    "Bukan peta jalan. Titik tengah adalah lokasi perkiraan Anda; setiap nomor adalah satu lokasi catatan perwakilan, bukan pusat sebaran atau semua catatan. Geser dan cubit peta, atau ketuk titik dan kartu di bawah.",
+                                    "Wilayah di sekitar Anda disorot dan setiap titik diberi nama tanaman. " +
+                                        "Bukan peta jalan dan bukan radar: titik adalah lokasi catatan perwakilan, " +
+                                        "bukan pusat sebaran atau seluruh catatan.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = TextSecondary,
                                 )
@@ -333,18 +335,20 @@ fun NearbyScreen(
                                     onSelect = model::select,
                                 )
                                 Text(
-                                    "Lingkaran dalam: ${result.radiusKm / 2.0} km · lingkaran luar: ${result.radiusKm} km. Utara di atas.",
+                                    "Radius sorotan: ${result.radiusKm} km. Utara di atas.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = TextSecondary,
                                 )
                             }
                         }
                     }
+                    // Dua kolom: nama dan foto terlihat sekaligus tanpa mengetuk kartu.
                     itemsIndexed(
                         result.species,
                         key = { _, species -> species.scientificName },
+                        contentType = { _, _ -> "species" },
                     ) { index, species ->
-                        SpeciesCard(
+                        NearbySpeciesGridCard(
                             species = species,
                             expanded = selected == index,
                             latitude = state.latitude,
@@ -476,8 +480,12 @@ internal fun licenseLabel(license: String): String {
     return if (type != null && version != null) "CC $type $version" else license.trim()
 }
 
+/**
+ * Kartu ringkas: nama dan foto terlihat tanpa diketuk. Detail dan kredit foto hanya dibuka
+ * bila diminta, sehingga daftar tidak lagi didominasi satu foto besar per tanaman.
+ */
 @Composable
-private fun SpeciesCard(
+private fun NearbySpeciesGridCard(
     species: NearbySpecies,
     expanded: Boolean,
     latitude: Double?,
@@ -494,34 +502,46 @@ private fun SpeciesCard(
         border = if (expanded) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
         modifier = Modifier.fillMaxWidth().semantics {
             this.selected = expanded
-            stateDescription = if (expanded) "Detail terbuka" else "Ketuk untuk melihat detail"
+            stateDescription =
+                if (expanded) "Detail terbuka" else "Ketuk untuk detail dan kredit foto"
         },
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            PhotoTile(
-                url = species.photo?.thumbUrl,
-                contentDescription = "Foto ${species.commonName ?: species.scientificName}",
-                modifier = Modifier.fillMaxWidth().aspectRatio(4f / 3f),
-            )
-            species.photo?.let { PhotoCredit(it) }
-            Text(
-                species.commonName ?: species.scientificName,
-                style = MaterialTheme.typography.titleLarge,
-            )
-            if (species.commonName != null) {
-                Text(
-                    species.scientificName,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
-                    color = TextSecondary,
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PhotoTile(
+                    url = species.photo?.thumbUrl,
+                    contentDescription = "Foto ${species.commonName ?: species.scientificName}",
+                    modifier = Modifier.size(96.dp),
+                    iconSize = 32.dp,
+                    shape = RoundedCornerShape(16.dp),
                 )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        // Judul selalu nama Indonesia; nama ilmiah tidak pernah menggantikannya.
+                        species.commonName ?: "Tanaman ini",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                    )
+                    Text(
+                        species.scientificName,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
+                        color = TextSecondary,
+                        maxLines = 2,
+                    )
+                    Text(
+                        "${species.observations} catatan publik",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                    )
+                }
             }
-            Text(
-                "${species.observations} catatan publik",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-            )
             if (expanded) {
-                HorizontalDivider(Modifier.padding(top = 8.dp))
+                HorizontalDivider(Modifier.padding(top = 4.dp))
+                species.photo?.let { PhotoCredit(it) }
                 SpeciesDetail(
                     species = species,
                     latitude = latitude,
@@ -628,11 +648,17 @@ private fun NearbyMap(
     val northLabel = remember(measurer, labelStyle) {
         measurer.measure(AnnotatedString("U ↑"), style = labelStyle)
     }
-    val innerLabel = remember(measurer, labelStyle, radiusKm) {
-        measurer.measure(AnnotatedString("${radiusKm / 2} km"), style = labelStyle)
-    }
     val outerLabel = remember(measurer, labelStyle, radiusKm) {
-        measurer.measure(AnnotatedString("$radiusKm km"), style = labelStyle)
+        measurer.measure(AnnotatedString("Radius $radiusKm km"), style = labelStyle)
+    }
+    // Nama tanaman tampil di peta supaya wilayah terbaca tanpa membuka kartu.
+    val nameLabels = remember(measurer, labelStyle, species) {
+        species.map { entry ->
+            measurer.measure(
+                AnnotatedString((entry.commonName ?: entry.scientificName).take(22)),
+                style = labelStyle,
+            )
+        }
     }
     val markerLabels = remember(measurer, markerStyle, points.size) {
         points.indices.map { measurer.measure(AnnotatedString("${it + 1}"), style = markerStyle) }
@@ -665,9 +691,10 @@ private fun NearbyMap(
             .background(colors.surfaceVariant)
             .semantics {
                 contentDescription =
-                    "Peta skema ${species.size} titik perwakilan dalam radius $radiusKm km. " +
-                    "Bukan peta jalan. Utara di atas, lokasi Anda di tengah. " +
-                    "Geser dan cubit untuk memperbesar hingga empat kali; ketuk titik atau kartu daftar untuk detail."
+                    "Peta wilayah ${species.size} titik perwakilan dalam radius $radiusKm km. " +
+                    "Wilayah di sekitar lokasi Anda disorot dan setiap titik diberi nama tanaman. " +
+                    "Bukan peta jalan. Utara di atas, lokasi Anda di tengah. Geser dan cubit untuk " +
+                    "memperbesar hingga empat kali; ketuk titik atau kartu untuk detail."
             },
     ) {
         Canvas(
@@ -692,12 +719,13 @@ private fun NearbyMap(
             val center = Offset(size.width / 2f, size.height / 2f)
             val ring = size.minDimension * 0.39f * scale
             val origin = center + Offset(panX, panY)
-            drawCircle(colors.outline, ring, origin, style = Stroke(2.dp.toPx()))
-            drawCircle(colors.outline, ring / 2f, origin, style = Stroke(1.dp.toPx()))
+            // Wilayah tersorot, bukan radar: satu area berisi warna lembut dengan batas tegas.
+            drawCircle(colors.primary.copy(alpha = 0.15f), ring, origin)
+            drawCircle(colors.primary.copy(alpha = 0.75f), ring, origin, style = Stroke(2.dp.toPx()))
             drawLine(colors.outline, origin - Offset(ring, 0f), origin + Offset(ring, 0f), strokeWidth = 1.dp.toPx())
             drawLine(colors.outline, origin - Offset(0f, ring), origin + Offset(0f, ring), strokeWidth = 1.dp.toPx())
 
-            // Labels draw on a solid chip so they stay legible over rings at any zoom.
+            // Label digambar pada chip agar tetap terbaca di atas area berwarna.
             fun label(layout: TextLayoutResult, anchor: Offset) {
                 val width = layout.size.width.toFloat()
                 val height = layout.size.height.toFloat()
@@ -714,11 +742,11 @@ private fun NearbyMap(
             }
 
             label(northLabel, Offset(24.dp.toPx(), 10.dp.toPx()))
-            label(innerLabel, Offset(origin.x, origin.y - ring / 2f - 26.dp.toPx()))
             label(outerLabel, Offset(origin.x, origin.y - ring - 26.dp.toPx()))
 
-            drawCircle(colors.onSurface, 7.dp.toPx(), origin)
-            drawCircle(colors.surface, 3.dp.toPx(), origin)
+            // Lokasi pengguna: titik tegas di pusat wilayah.
+            drawCircle(colors.primary, 9.dp.toPx(), origin)
+            drawCircle(colors.surface, 4.dp.toPx(), origin)
 
             val markerRadius = 13.dp.toPx()
             fun drawMarker(index: Int) {
@@ -738,6 +766,9 @@ private fun NearbyMap(
                         position.y - number.size.height / 2f,
                     ),
                 )
+                // Nama tanaman tampil di peta, bukan hanya nomor.
+                label(nameLabels[index], Offset(position.x, position.y + markerRadius + 8.dp.toPx()))
+
             }
             points.indices.forEach { if (it != selected) drawMarker(it) }
             // The selected marker draws last so its callout is never hidden.
@@ -755,11 +786,11 @@ private fun NearbyMap(
                     Modifier
                         .offset {
                             IntOffset(
-                                (anchor.x - 22.dp.toPx()).roundToInt(),
-                                (anchor.y - 22.dp.toPx()).roundToInt(),
+                                (anchor.x - 24.dp.toPx()).roundToInt(),
+                                (anchor.y - 24.dp.toPx()).roundToInt(),
                             )
                         }
-                        .size(44.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .clickable(
                             onClickLabel = if (index == selected) "Tutup detail" else "Buka detail",
@@ -840,16 +871,14 @@ private fun CalloutCard(species: NearbySpecies) {
             Spacer(Modifier.width(8.dp))
             Column {
                 Text(
-                    species.commonName ?: species.scientificName,
+                    species.commonName ?: "Nama Indonesia belum tersedia",
                     style = MaterialTheme.typography.titleMedium,
                 )
-                if (species.commonName != null) {
-                    Text(
-                        species.scientificName,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
-                        color = TextSecondary,
-                    )
-                }
+                Text(
+                    species.scientificName,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
+                    color = TextSecondary,
+                )
                 species.photo?.let { photo ->
                     Text(
                         "Foto: ${photo.credit} · ${licenseLabel(photo.license)}",
@@ -906,7 +935,9 @@ private fun NearbyErrorSheet(
                 Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
             }
             Text(message, style = MaterialTheme.typography.bodyLarge)
-            Text(advice, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            if (advice != message) {
+                Text(advice, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            }
             PrimaryButton(text = "Coba lagi", onClick = onRetry, icon = Icons.Filled.Refresh)
             SecondaryButton(text = "Cari dengan koordinat", onClick = onManualLocation)
         }

@@ -56,7 +56,7 @@ fun CareToolsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
-            "Lainnya",
+            "Panduan & alat",
             style = MaterialTheme.typography.headlineSmall,
             color = TextPrimary,
             modifier = Modifier.semantics { heading() },

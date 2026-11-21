@@ -17,16 +17,27 @@ class ReminderRepository(private val database: JagaDaunDatabase) {
 
     suspend fun add(reminder: Reminder) = reminderDao.upsert(reminder.toEntity())
 
-    suspend fun update(reminder: Reminder) = reminderDao.upsert(reminder.toEntity())
+    suspend fun update(reminder: Reminder): Boolean = database.withTransaction {
+        if (reminderDao.getById(reminder.id) == null) return@withTransaction false
+        reminderDao.upsert(reminder.toEntity())
+        true
+    }
+
+    /** Change only the pause state; never restore a stale scheduled occurrence. */
+    suspend fun setActive(id: String, active: Boolean): Boolean = database.withTransaction {
+        val current = reminderDao.getById(id) ?: return@withTransaction false
+        reminderDao.upsert(current.copy(active = active))
+        true
+    }
 
     suspend fun delete(id: String) = reminderDao.deleteById(id)
 
     suspend fun deleteByPlant(plantId: String) = reminderDao.deleteByPlantId(plantId)
 
     /** Compare the displayed occurrence atomically so repeated taps cannot record it twice. */
-    suspend fun complete(reminderId: String, expectedDue: Long) = database.withTransaction {
-        val entity = reminderDao.getById(reminderId) ?: return@withTransaction
-        if (!entity.active || entity.nextDue != expectedDue) return@withTransaction
+    suspend fun complete(reminderId: String, expectedDue: Long): Boolean = database.withTransaction {
+        val entity = reminderDao.getById(reminderId) ?: return@withTransaction false
+        if (!entity.active || entity.nextDue != expectedDue) return@withTransaction false
         reminderDao.upsert(entity.copy(nextDue = nextReminderDue(
             entity.intervalDays, entity.preferredTime, entity.zoneId, maxOf(System.currentTimeMillis(), entity.nextDue),
         )))
@@ -37,6 +48,7 @@ class ReminderRepository(private val database: JagaDaunDatabase) {
                 completedAt = System.currentTimeMillis(),
             ),
         )
+        true
     }
 
 }

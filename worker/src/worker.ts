@@ -125,8 +125,29 @@ async function deadline<T>(milliseconds: number, operation: (signal: AbortSignal
   }
 }
 
+/**
+ * Drain then cancel an unread request body.
+ *
+ * `body.cancel()` alone is not enough: undici's internal pump may still write into the closed
+ * stream and raise ERR_INVALID_STATE as an unhandled rejection, which crashes long-lived test
+ * processes. Consuming the stream first leaves nothing for the pump to write into.
+ * The body is bounded by the caller (content-length / upload cap) before this runs, and any
+ * failure is swallowed on purpose: rejection handling must never replace the real error.
+ */
 function cancelBody(body: ReadableStream<Uint8Array> | null): void {
-  if (body) void body.cancel().catch(() => {});
+  if (!body) return;
+  void (async () => {
+    try {
+      await new Response(body).arrayBuffer();
+    } catch {
+      // Already locked or closed; fall through to cancel.
+    }
+    try {
+      await body.cancel();
+    } catch {
+      // Ignore: the response already carries the authoritative error code.
+    }
+  })().catch(() => {});
 }
 
 async function readImage(request: Request): Promise<Uint8Array<ArrayBuffer>> {
@@ -502,8 +523,29 @@ interface NearbyWiki {
 
 /**
  * Indonesian name and summary from Wikipedia, accepted only when the article's lead
- * actually contains the scientific name, which rejects unrelated name collisions.
+ * contains the scientific name, or a near-miss genus spelling plus a taxon description.
  */
+/**
+ * Genus dianggap disebut bila kata dalam teks berada dalam jarak edit 1 dari genus asli.
+ * Ini menerima salah eja umum ("Altenanthera") tanpa membuka jalan bagi genus lain.
+ */
+function genusMatches(text: string, genus: string): boolean {
+  const words = text.match(/[a-z]{5,}/g) ?? [];
+  return words.some(word => {
+    if (word === genus) return true;
+    if (Math.abs(word.length - genus.length) > 1) return false;
+    let i = 0, j = 0, edits = 0;
+    while (i < word.length && j < genus.length) {
+      if (word[i] === genus[j]) { i++; j++; continue; }
+      if (++edits > 1) return false;
+      if (word.length > genus.length) i++;
+      else if (word.length < genus.length) j++;
+      else { i++; j++; }
+    }
+    return edits + (word.length - i) + (genus.length - j) <= 1;
+  });
+}
+
 async function nearbyWiki(scientificName: string, signal: AbortSignal): Promise<NearbyWiki | null> {
   const url = new URL("https://id.wikipedia.org/w/api.php");
   url.search = new URLSearchParams({
@@ -528,8 +570,24 @@ async function nearbyWiki(scientificName: string, signal: AbortSignal): Promise<
     if (!record(page)) return null;
     const title = nonemptyName(page.title);
     const extract = typeof page.extract === "string" ? page.extract : "";
-    if (!title || !extract || !extract.toLowerCase().includes(scientificName.toLowerCase())) return null;
+    if (!title || !extract) return null;
     const description = nonemptyName(page.description);
+    // Tahap 1: intro harus menyebut nama ilmiah penuh, jadi judul artikel adalah nama Indonesia.
+    const speciesName = scientificName.toLowerCase();
+    const introConfirms = extract.toLowerCase().includes(speciesName);
+    // Tahap 2: artikel Indonesia sering mengeja genus sedikit berbeda ("Altenanthera") dan
+    // tidak punya field description. Nama diterima bila genus cocok toleran DAN epitet spesies
+    // muncul utuh, atau deskripsi menyatakan taksa. Judul yang sekadar nama genus ditolak:
+    // "Pyrrosia" adalah artikel marga, bukan nama tanaman.
+    const [genusWord, epithetWord] = scientificName.toLowerCase().split(/\s+/);
+    const genus = genusWord ?? "";
+    const genusConfirms = genus.length > 4 && genusMatches(extract.toLowerCase(), genus);
+    const epithetConfirms = Boolean(epithetWord) &&
+      new RegExp(`\\b${epithetWord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(extract.toLowerCase());
+    const labeledTaxon = /\b(tumbuhan|spesies|jenis|marga|genus|familia|suku)\b/i.test(description ?? "");
+    const genusOnlyTitle = title.trim().toLowerCase() === genus;
+    const genusPath = genusConfirms && !genusOnlyTitle && (labeledTaxon || epithetConfirms);
+    if (!introConfirms && !genusPath) return null;
     const thumbnail = record(page.thumbnail) ? nonemptyName(page.thumbnail.source) : null;
     // The real Commons licence must travel with the picture; a generic label cannot be shown.
     const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;

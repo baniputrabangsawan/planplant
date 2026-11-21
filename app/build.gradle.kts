@@ -21,8 +21,8 @@ android {
         applicationId = "com.jagadaun.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7"
+        versionCode = 8
+        versionName = "0.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "IDENTIFICATION_URL", "\"https://jagadaun-identify.baniputrabangsawan0.workers.dev/v1/identify\"")
         buildConfigField("String", "IDENTIFICATION_TOKEN", "\"$identificationToken\"")

@@ -39,12 +39,47 @@ class NearbyCache(context: Context, private val parser: (String, Int) -> NearbyP
         }
     }
 
+    /**
+     * Hasil terakhir dari pencarian apa pun, agar Beranda dapat menampilkan tanaman sekitar
+     * segera saat aplikasi dibuka tanpa menunggu lokasi. Ditulis bersama cache harian.
+     */
+    fun writeLatest(plants: NearbyPlants) {
+        try {
+            directory.mkdirs()
+            File(directory, LATEST).writeText(encode(plants, plants.radiusKm), Charsets.UTF_8)
+        } catch (_: java.io.IOException) {
+            // Cache tidak boleh menggagalkan pencarian yang berhasil.
+        }
+    }
+
+    /** Radius ikut disimpan di envelope, jadi parser tetap memvalidasi seluruh isi. */
+    fun readLatest(): NearbyPlants? {
+        val file = File(directory, LATEST)
+        if (!file.isFile || file.length() > MAX_BYTES) return null
+        return try {
+            val body = JSONObject(file.readText(Charsets.UTF_8))
+            val radius = body.optInt("radiusKm", 0)
+            if (radius !in setOf(5, 10, 25)) return null
+            parser(body.toString(), radius)
+        } catch (_: NearbyException) {
+            file.delete()
+            null
+        } catch (_: org.json.JSONException) {
+            file.delete()
+            null
+        } catch (_: java.io.IOException) {
+            null
+        }
+    }
+
     fun write(latitude: Double, longitude: Double, radiusKm: Int, plants: NearbyPlants, day: String = today) {
         try {
             directory.mkdirs()
             // Old days and other radii are not useful once the location changes.
             directory.listFiles()?.forEach { file ->
-                if (!file.name.startsWith(key(latitude, longitude, radiusKm, day))) file.delete()
+                if (file.name != LATEST && !file.name.startsWith(key(latitude, longitude, radiusKm, day))) {
+                    file.delete()
+                }
             }
             val target = File(directory, "${key(latitude, longitude, radiusKm, day)}.json")
             val body = encode(plants, radiusKm)
@@ -93,5 +128,6 @@ class NearbyCache(context: Context, private val parser: (String, Int) -> NearbyP
 
     private companion object {
         const val MAX_BYTES = 256L * 1024
+        const val LATEST = "latest.json"
     }
 }
